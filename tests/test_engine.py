@@ -17,6 +17,9 @@ def fixture(width=390,kind=None,scale=1,dy=0):
  d.rounded_rectangle((24,300+dy,width-24,350+dy),8,fill='#D14A39' if kind=='color' else '#28563F')
  d.text((width/2-30,315+dy),'Continue',font=f(14),fill='white')
  d.ellipse((30,410,66 if kind=='icon_shape' else 54,434),outline='#234561',width=3)
+ d.rounded_rectangle((35,245,width-35,285),5,outline='#627189',width=2)
+ d.text((52,254),'Left',font=f(16),fill='#263141')
+ d.text((135 if kind=='spacing' else 120,254),'Right',font=f(16),fill='#263141')
  d.rounded_rectangle((100,500,180,532),5,outline='#627189',width=2)
  ax=108 if kind=='alignment' else 100
  d.rounded_rectangle((ax,560,ax+80,592),5,outline='#627189',width=2)
@@ -33,7 +36,7 @@ def test_identity(width,tmp_path):
 @pytest.mark.parametrize('width',[360,375,390,414,430])
 @pytest.mark.parametrize('kind',list(CATEGORIES))
 def test_categories(width,kind,tmp_path):
- a=fixture(width);b=fixture(width,kind if kind not in ('component_position','spacing') else None,dy=8 if kind in ('component_position','spacing') else 0)
+ a=fixture(width);b=fixture(width,kind,dy=8 if kind=='component_position' else 0)
  r=run(tmp_path,a,b)
  assert any(q['category']==kind for q in r['issues']), (width,kind,[(q['category'],q['title']) for q in r['issues']])
  if kind=='component_position':
@@ -49,9 +52,9 @@ def test_vertical_text_move_is_component_arrangement_not_alignment(tmp_path):
  assert not any(q['category']=='alignment' for q in moved)
 
 def test_spacing_is_reported_as_its_own_category(tmp_path):
- r=run(tmp_path,fixture(),fixture(dy=14))
+ r=run(tmp_path,fixture(),fixture(kind='spacing'))
  q=next(q for q in r['issues'] if q['category']=='spacing')
- assert q['title'] in ('横向元素间距不一致','纵向元素间距不一致')
+ assert q['title'] in ('组件内横向元素间距不一致','组件内纵向元素间距不一致')
  assert '间距' in q['measurements'][0]['metric']
 
 def test_button_border_does_not_change_glyph_height():
@@ -92,13 +95,13 @@ def coverage_for_test(a,b):
  x=max(a[0],b[0]);y=max(a[1],b[1]);w=max(0,min(a[0]+a[2],b[0]+b[2])-x);h=max(0,min(a[1]+a[3],b[1]+b[3])-y)
  return w*h/max(1,a[2]*a[3])
 
-def test_horizontal_row_distribution_is_spacing_not_alignment(tmp_path):
+def test_cross_component_row_distribution_is_not_spacing_or_alignment(tmp_path):
  a=fixture();b=fixture();font=ImageFont.truetype(FONT,18)
  for im,right_x in ((a,310),(b,326)):
   d=ImageDraw.Draw(im);d.text((180,250),'Left',font=font,fill='#263141');d.text((right_x,250),'Right',font=font,fill='#263141')
  r=run(tmp_path,a,b)
  moved=[q for q in r['issues'] if 'Right' in q['regionLabel']]
- assert any(q['category']=='spacing' for q in moved)
+ assert not any(q['category']=='spacing' for q in moved)
  assert not any(q['category']=='alignment' for q in moved)
 
 @pytest.mark.parametrize('scale',[2,3])

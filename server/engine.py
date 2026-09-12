@@ -272,15 +272,32 @@ def union_box(a,b):
  x=min(a[0],b[0]);y=min(a[1],b[1]);right=max(a[0]+a[2],b[0]+b[2]);bottom=max(a[1]+a[3],b[1]+b[3])
  return [x,y,right-x,bottom-y]
 
+def immediate_component_parents(items):
+ parents={}
+ for index,item in enumerate(items):
+  if item['kind'] not in ('text','icon'):continue
+  area=item['box'][2]*item['box'][3];candidates=[]
+  for parent_index,parent in enumerate(items):
+   if parent['kind']!='component' or parent_index==index:continue
+   parent_area=parent['box'][2]*parent['box'][3]
+   if parent_area>area*1.15 and coverage(item['box'],parent['box'])>=.82:
+    candidates.append((parent_area,parent_index))
+  if candidates:parents[index]=min(candidates)[1]
+ return parents
+
 def spacing_differences(regions,pairs,design_width,implementation_width,cross,threshold):
  matched=[(i,j) for i,j,_ in pairs];candidates=[]
+ design_parents=immediate_component_parents(regions[0]);implementation_parents=immediate_component_parents(regions[1])
  for i,j in matched:
   first=regions[0][i];qfirst=regions[1][j];x,y,w,h=first['box'];qx,qy,qw,qh=qfirst['box']
+  if first['kind'] not in ('text','icon') or i not in design_parents or j not in implementation_parents:continue
   px,pw,_=adaptive_geometry(first['box'],design_width,implementation_width) if cross else (x,w,'同宽坐标')
   nearest={'horizontal':None,'vertical':None}
   for k,l in matched:
    if k==i:continue
    second=regions[0][k];qsecond=regions[1][l]
+   if second['kind'] not in ('text','icon') or 'text' not in (first['kind'],second['kind']):continue
+   if design_parents.get(k)!=design_parents[i] or implementation_parents.get(l)!=implementation_parents[j]:continue
    if coverage(first['box'],second['box'])>.12 or coverage(second['box'],first['box'])>.12:continue
    xx,yy,ww,hh=second['box'];qxx,qyy,qww,qhh=qsecond['box']
    pxx,pww,_=adaptive_geometry(second['box'],design_width,implementation_width) if cross else (xx,ww,'同宽坐标')
@@ -301,7 +318,7 @@ def spacing_differences(regions,pairs,design_width,implementation_width,cross,th
    if abs(delta)<threshold or abs(delta)/max(8,abs(expected))<.12:continue
    r={'box':union_box(first['box'],second['box']),'kind':'component','text':f'{first["text"]} ↔ {second["text"]}'}
    s={'box':union_box(qfirst['box'],qsecond['box']),'kind':'component','text':r['text']}
-   candidates.append({'axis':axis,'expected':expected,'actual':actual,'delta':delta,'r':r,'s':s,'indices':(i,k),'priority':2 if first['kind']=='component' else 1})
+   candidates.append({'axis':axis,'expected':expected,'actual':actual,'delta':delta,'r':r,'s':s,'indices':(i,k),'priority':2 if 'icon' in (first['kind'],second['kind']) else 1})
  candidates.sort(key=lambda item:(item['priority'],abs(item['delta'])),reverse=True)
  selected=[]
  for candidate in candidates:
@@ -451,12 +468,6 @@ def analyze(design,implementation,config,out,progress,check):
  spacing_changes=spacing_differences(rs,pairs,aa.shape[1],bb.shape[1],cross,spacing_threshold)
  spacing_members={index for item in spacing_changes for index in item['indices']}
  alignment_changes=alignment_differences(rs,pairs,aa.shape[1],bb.shape[1],cross,pos)
- alignment_members={index for item in alignment_changes for index in item['indices']}
- pair_offsets={}
- for i,j,_ in pairs:
-  r=rs[0][i];s=rs[1][j];x,y,rw,rh=r['box'];xx,yy,_,_=s['box'];expected_x=x
-  if cross:expected_x,_,_=adaptive_geometry(r['box'],aa.shape[1],bb.shape[1])
-  pair_offsets[(i,j)]=(xx-expected_x,yy-y,x+rw/2,y+rh/2)
  for i,j,cost in pairs:
   check(); r=rs[0][i];s=rs[1][j]; x,y,rw,rh=r['box'];xx,yy,sw,sh=s['box'];kind=r['kind']
   if min(y+rh,yy+sh)>h and (y>=h or yy>=h):continue
@@ -474,17 +485,14 @@ def analyze(design,implementation,config,out,progress,check):
   yq=(bb.shape[0]-yy-sh-config.get('implementation',{}).get('safeBottom',0)) if bottom else yy
   dy=yq-yp
   if abs(dx)>pos or abs(dy)>pos or (cross and kind!='text' and abs(sw-expected_w)>max(2,expected_w*size)):
-   row_context=kind=='text' and any(k!=i and coverage(r['box'],rs[0][k]['box'])<=.12 and coverage(rs[0][k]['box'],r['box'])<=.12 and abs((y+rh/2)-(rs[0][k]['box'][1]+rs[0][k]['box'][3]/2))<=max(8,rh*.8) and abs((x+rw/2)-(rs[0][k]['box'][0]+rs[0][k]['box'][2]/2))<360 for k,_,_ in pairs)
-   dedicated_relation=(i in spacing_members or i in alignment_members) and abs(dx)+abs(dy)<=max(12,spacing_threshold*2.5)
+   dedicated_relation=i in spacing_members
    if not dedicated_relation:
-    spacing_move=kind=='text' and abs(dy)<=pos and row_context
-    layout_move=not spacing_move
-    cat='spacing' if spacing_move else 'component_position'
-    title=('跨宽行内间距分布不符合预期' if spacing_move else '跨宽组件排布不符合预期') if cross else ('同一行元素间距或分布变化' if spacing_move else '文字或按钮组件排布位置变化' if kind=='text' else '组件位置偏移')
+    cat='component_position'
+    title='跨宽组件排布不符合预期' if cross else '文字或按钮组件排布位置变化' if kind=='text' else '组件位置偏移'
     if bottom:title='底部锚定间距偏差'
     geometry=[metric('适配预期左边缘 x' if cross else '左边缘 x',expected_x,xx,estimate=cross),metric('距底部安全区' if bottom else '上边缘 y',yp,yq,estimate=cross)]
     if cross and kind!='text':geometry.append(metric('适配预期宽度',expected_w,sw,estimate=True))
-    suggestion='核对同一行元素的 gap、margin、两端分布或内容宽度。' if spacing_move else '检查目标宽度下的约束、边距、居中或拉伸规则。' if cross else '检查对应区域的内边距、约束或相对间距。'
+    suggestion='检查目标宽度下的约束、边距、居中或拉伸规则。' if cross else '检查对应区域的内边距、约束或相对间距。'
     add(cat,title,r,s,geometry,(adaptation+'估算 · ' if cross else '')+('OCR 边界' if kind=='text' else '轮廓边界'),suggestion,conf if sameheight or bottom else 'low')
   if not cross and known:
    da=config.get('design',{}); ib=config.get('implementation',{})
@@ -527,7 +535,7 @@ def analyze(design,implementation,config,out,progress,check):
    add('icon_shape','疑似 Icon 非等比形变',r,s,[metric('宽高比',rw/rh,sw/sh,'比例'),metric('轮廓宽度',rw,sw),metric('轮廓高度',rh,sh)],'保留比例的轮廓测量','核对图标资源与宽高约束；区分图案变化和非等比拉伸。','medium')
  for item in spacing_changes:
   axis='横向' if item['axis']=='horizontal' else '纵向'
-  add('spacing',f'{axis}元素间距不一致',item['r'],item['s'],[metric(('适配预期' if cross else '设计稿')+axis+'间距',item['expected'],item['actual'],estimate=cross)],('跨宽锚点估算 · ' if cross else '')+'相邻元素边缘距离','核对相邻组件的 margin、gap、内外边距或布局约束。','medium')
+  add('spacing',f'组件内{axis}元素间距不一致',item['r'],item['s'],[metric(('适配预期' if cross else '设计稿')+axis+'间距',item['expected'],item['actual'],estimate=cross)],('跨宽锚点估算 · ' if cross else '')+'同一组件内相邻文字或 Icon 的边缘距离','核对组件内部文字与文字、文字与 Icon 之间的 gap、margin 或内边距。','medium')
  for item in alignment_changes:
   relation='上下元素的水平中心线' if item['axis']=='horizontal_center' else '左右元素的垂直中心线'
   add('alignment',f'{relation}未对齐',item['r'],item['s'],[metric(relation+'偏差',item['expected'],item['actual'],estimate=cross)],('跨宽锚点估算 · ' if cross else '')+'元素中心点关系','核对容器的居中、align-items、基线或约束关系。','medium')
@@ -551,4 +559,4 @@ def analyze(design,implementation,config,out,progress,check):
     remove.add(q['id']);break
  issues=[q for q in issues if q['id'] not in remove]
  stage(4)
- return {'status':'partial' if any(cov[c]['status']!='checked' for c in selected) else 'completed','issues':issues,'coverage':cov,'warnings':warnings,'transforms':maps,'metadata':metadata,'ignoredOverlays':ignored,'mode':'cross_width_reference' if cross else 'same_width','normalizedSizes':[[a.shape[1],a.shape[0]] for a in imgs],'duration':round(time.monotonic()-start,1),'candidateCounts':[len(r) for r in rs],'matchedCandidates':len(pairs),'unit':unit,'analyzerVersion':'1.4.0'}
+ return {'status':'partial' if any(cov[c]['status']!='checked' for c in selected) else 'completed','issues':issues,'coverage':cov,'warnings':warnings,'transforms':maps,'metadata':metadata,'ignoredOverlays':ignored,'mode':'cross_width_reference' if cross else 'same_width','normalizedSizes':[[a.shape[1],a.shape[0]] for a in imgs],'duration':round(time.monotonic()-start,1),'candidateCounts':[len(r) for r in rs],'matchedCandidates':len(pairs),'unit':unit,'analyzerVersion':'1.4.1'}
