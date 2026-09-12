@@ -5,6 +5,7 @@ from PIL import Image, ImageDraw, ImageFont
 from server.engine import analyze,CATEGORIES
 
 FONT='/System/Library/Fonts/STHeiti Light.ttc'
+MEDIUM_FONT='/System/Library/Fonts/STHeiti Medium.ttc'
 
 def fixture(width=390,kind=None,scale=1,dy=0):
  im=Image.new('RGB',(width,700),'white');d=ImageDraw.Draw(im)
@@ -40,13 +41,41 @@ def test_density(scale,tmp_path):
  assert r['issues']==[],[(q['title'],q['measurements']) for q in r['issues']]
 
 def test_crosswidth_not_fake_geometry(tmp_path):
- r=run(tmp_path,fixture(375),fixture(390,dy=8))
+ r=run(tmp_path,fixture(375),fixture(390))
  assert r['mode']=='cross_width_reference'
- assert r['coverage']['component_position']['status']=='unavailable'
+ assert r['coverage']['component_position']['status']=='partial'
  assert not any(q['category']=='component_position' for q in r['issues'])
 
+def test_crosswidth_reports_adaptation_error(tmp_path):
+ r=run(tmp_path,fixture(375),fixture(390,dy=8))
+ q=next(q for q in r['issues'] if q['category']=='component_position')
+ assert q['title']=='跨宽组件适配不符合预期'
+ assert any(m['certainty']=='estimated' for m in q['measurements'])
+
+def test_common_widths_are_inferred(tmp_path):
+ r=run(tmp_path,fixture(375),fixture(390),{'design':{},'implementation':{},'categories':list(CATEGORIES)})
+ assert r['mode']=='cross_width_reference'
+ assert [m['logicalWidth'] for m in r['metadata']]==[375,390]
+ assert all(m['source']=='auto_inferred' for m in r['metadata'])
+
+def test_real_font_weight_change(tmp_path):
+ a=fixture();b=fixture();d=ImageDraw.Draw(b)
+ d.rectangle((20,120,180,155),fill='white')
+ d.text((24,125),'Typography',font=ImageFont.truetype(MEDIUM_FONT,22),fill='#263141')
+ r=run(tmp_path,a,b)
+ assert any(q['category']=='font_weight' for q in r['issues'])
+
+@pytest.mark.parametrize('label', ['CBase', 'LEGO'])
+def test_common_test_overlay_is_automatically_ignored(tmp_path, label):
+ a=fixture();b=fixture();d=ImageDraw.Draw(b)
+ d.rounded_rectangle((275,20,375,58),8,fill='#20242A')
+ d.text((292,29),label,font=ImageFont.truetype(FONT,16),fill='white')
+ r=run(tmp_path,a,b)
+ assert any('CBase / LEGO' in warning for warning in r['warnings'])
+ assert not any(q['implementationBBox'] and q['implementationBBox']['x']>260 and q['implementationBBox']['y']<70 for q in r['issues'])
+
 def test_unknown_density_requests_alignment(tmp_path):
- r=run(tmp_path,fixture(),fixture(scale=2),{'design':{},'implementation':{}})
+ r=run(tmp_path,fixture(400),fixture(400,scale=2),{'design':{},'implementation':{}})
  assert r['status']=='needs_alignment'
 
 def test_masks_do_not_hide_outside(tmp_path):
