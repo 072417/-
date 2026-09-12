@@ -11,7 +11,7 @@ from skimage.color import rgb2lab, deltaE_ciede2000
 CATEGORIES = {'text_size':'文字大小','font_weight':'字重','alignment':'对齐','color':'颜色','icon_shape':'Icon 形变','component_position':'组件位置'}
 HELPER = Path(__file__).with_name('ocr-helper')
 MOBILE_WIDTHS = (360,375,390,414,430)
-TEST_OVERLAY = re.compile(r'(?i)(?:^|[^a-z0-9])(?:c\s*base|lego)(?:[^a-z0-9]|$)')
+TEST_OVERLAY = re.compile(r'(?i)(?:^|[^a-z0-9])(?:c\s*[b8][a4]se|leg[o0])(?:[^a-z0-9]|$)')
 
 def crop(a,b):
  x,y,w,h = [int(round(v)) for v in b]
