@@ -6,6 +6,7 @@ services:
       PUBLIC_MODE: "true"
       COOKIE_SECURE: "true"
       DESIGN_REVIEW_DATA: /data
+      ANALYSIS_WORKERS: "1"
       VISION_BASE_URL: ${VISION_BASE_URL:-}
       VISION_MODEL: ${VISION_MODEL:-}
       VISION_API_KEY: ${VISION_API_KEY:-}

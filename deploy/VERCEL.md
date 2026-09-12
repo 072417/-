@@ -6,7 +6,7 @@ Vercel 发布静态前端，并将 `/api/*`、`/assets-store/*` 转发到独立 
 
 在支持 Docker 和持久磁盘的云平台使用本仓库 Dockerfile。容器端口为 8765，健康检查 `/api/health`，磁盘挂载 `/data`。使用一个实例、一个 Uvicorn worker，禁止自动休眠和自动横向扩容；当前 SQLite/进程任务队列不支持多副本。
 
-环境变量：`PUBLIC_MODE=true`、`COOKIE_SECURE=true`、`DESIGN_REVIEW_DATA=/data`，以及 `ALLOWED_ORIGINS=https://你的正式前端域名`。多个受信任域名用英文逗号分隔，不要使用通配符。API Key 仅在后端平台填写，Vercel 无需模型密钥。
+环境变量：`PUBLIC_MODE=true`、`COOKIE_SECURE=true`、`DESIGN_REVIEW_DATA=/data`，以及 `ALLOWED_ORIGINS=https://你的正式前端域名`。2 核 2G 的最低配置使用 `ANALYSIS_WORKERS=1`，任务会排队；4 核 8G 可设为 `2`。多个受信任域名用英文逗号分隔，不要使用通配符。API Key 仅在后端平台填写，Vercel 无需模型密钥。
 
 自有服务器可运行 `docker compose -f compose.backend.yaml up -d --build`，并将 HTTPS 反向代理转发到本机 8765。不要将此端口直接暴露给公网。Dockerfile 包含中文、英文 Tesseract OCR 和中文字体。
 

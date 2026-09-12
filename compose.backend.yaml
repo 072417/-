@@ -9,6 +9,7 @@ services:
       PUBLIC_MODE: "true"
       COOKIE_SECURE: "true"
       DESIGN_REVIEW_DATA: /data
+      ANALYSIS_WORKERS: "1"
       ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:?Set the exact Vercel frontend origin}
       VISION_BASE_URL: ${VISION_BASE_URL:-}
       VISION_MODEL: ${VISION_MODEL:-}
