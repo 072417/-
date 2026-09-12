@@ -8,11 +8,14 @@ from PIL import Image
 from scipy.optimize import linear_sum_assignment
 from skimage.color import rgb2lab, deltaE_ciede2000
 
-CATEGORIES = {'text_size':'文字大小','font_weight':'字重','alignment':'对齐','color':'颜色','icon_shape':'Icon 形变','component_position':'组件位置'}
+CATEGORIES = {'text_size':'文字大小','font_weight':'字重','alignment':'对齐','color':'颜色','icon_shape':'Icon 形变','component_position':'组件位置','spacing':'元素间距'}
 HELPER = Path(__file__).with_name('ocr-helper')
 MOBILE_WIDTHS = (360,375,390,414,430)
 TEST_OVERLAY = re.compile(r'(?i)(?:^|[^a-z0-9])(?:c\s*[b8][a4]se|leg[o0]|容器)(?:[^a-z0-9]|$)')
 LONG_TEST_ID = re.compile(r'\d{7,}|(?i:pin)[a-z0-9:/_-]{4,}|(?=[a-z0-9:/_-]{10,})(?=[a-z0-9:/_-]*[a-z])(?=[a-z0-9:/_-]*\d)[a-z0-9:/_-]+')
+
+def normalized_text(value):
+ return re.sub(r'[^A-Za-z0-9\u3400-\u9fff]','',value or '')
 
 def crop(a,b):
  x,y,w,h = [int(round(v)) for v in b]
@@ -59,6 +62,21 @@ def recognize(a,check):
    r['kind']='text'; result.append(r)
  return result,None
 
+def photo_like(a,b):
+ p=crop(a,b)
+ if not p.size or min(p.shape[:2])<28:return False
+ h,w=p.shape[:2]
+ if max(h,w)>min(340,a.shape[1]*.72) or h*w>a.shape[0]*a.shape[1]*.2:return False
+ sample=cv2.resize(p,(min(96,w),min(96,h)),interpolation=cv2.INTER_AREA)
+ quant=(sample//16).reshape(-1,3)
+ unique=len(np.unique(quant,axis=0))
+ gray=cv2.cvtColor(sample,cv2.COLOR_RGB2GRAY)
+ hist=cv2.calcHist([gray],[0],None,[32],[0,256]).ravel();hist=hist/max(1,hist.sum())
+ entropy=float(-(hist[hist>0]*np.log2(hist[hist>0])).sum())
+ edges=float((cv2.Canny(gray,35,100)>0).mean())
+ color_spread=float(np.mean(np.std(sample.astype(float),axis=(0,1))))
+ return unique>=18 and entropy>=2.7 and color_spread>=16 and edges>=.025
+
 def regions(a,texts):
  # External contours provide components; text boxes are measured independently.
  gray=cv2.cvtColor(a,cv2.COLOR_RGB2GRAY)
@@ -71,10 +89,17 @@ def regions(a,texts):
  for c in sorted(contours,key=cv2.contourArea,reverse=True):
   x,y,w,h=cv2.boundingRect(c)
   if w<9 or h<9 or w*h<110 or w*h>a.shape[0]*a.shape[1]*.85: continue
+  # A photo is one visual element. Do not interpret shoes, faces, highlights, or
+  # other contours inside it as icons.
+  if any(r['kind']=='image' and coverage([x,y,w,h],r['box'])>.82 for r in rs):continue
   if any(iou([x,y,w,h],r['box'])>.8 or (w<85 and h<85 and r['kind']=='icon' and abs(x+w/2-r['box'][0]-r['box'][2]/2)<3 and abs(y+h/2-r['box'][1]-r['box'][3]/2)<3) for r in rs): continue
   if any(coverage([x,y,w,h],t['box'])>.6 for t in texts): continue
-  kind='icon' if 10<=w<=85 and 10<=h<=85 else 'component'
-  rs.append({'box':[x,y,w,h],'kind':kind,'text': '图标区域' if kind=='icon' else '组件区域','confidence':.7})
+  contains_text=any(coverage(t['box'],[x,y,w,h])>.6 for t in texts)
+  if photo_like(a,[x,y,w,h]):kind='image'
+  elif 10<=w<=85 and 10<=h<=85 and not contains_text and max(w,h)/max(1,min(w,h))<=1.8:kind='icon'
+  else:kind='component'
+  label={'icon':'图标区域','image':'图片区域','component':'组件区域'}[kind]
+  rs.append({'box':[x,y,w,h],'kind':kind,'text':label,'confidence':.7})
   if len(rs)>=180: break
  return rs
 
@@ -113,15 +138,46 @@ def background_color(a,b):
  ring=p[mask]
  return np.median(ring,axis=0) if len(ring) else np.array([255,255,255])
 
+def glyph_mask(a,b):
+ p=crop(a,b)
+ if not p.size:return p,np.zeros((0,0),np.uint8)
+ bg=background_color(a,b);distance=np.linalg.norm(p.astype(float)-bg,axis=2)
+ values=np.clip(distance[distance>5],0,255).astype(np.uint8)
+ if len(values)<5:return p,np.zeros(p.shape[:2],np.uint8)
+ threshold=max(18,float(cv2.threshold(values,0,255,cv2.THRESH_BINARY+cv2.THRESH_OTSU)[0]))
+ raw=(distance>threshold).astype(np.uint8)
+ count,labels,stats,_=cv2.connectedComponentsWithStats(raw,8);clean=np.zeros_like(raw);ph,pw=raw.shape
+ for index in range(1,count):
+  x,y,w,h,area=stats[index];fill=area/max(1,w*h)
+  horizontal_rule=w>=pw*.55 and h<=max(3,ph*.1)
+  vertical_rule=h>=ph*.65 and w<=max(3,pw*.035)
+  frame_rule=x<=1 and y<=1 and x+w>=pw-1 and y+h>=ph-1 and fill<.35
+  if area<2 or horizontal_rule or vertical_rule or frame_rule:continue
+  clean[labels==index]=1
+ return p,clean
+
+def glyph_height(a,b):
+ _,mask=glyph_mask(a,b)
+ if not mask.size or not mask.any():return None
+ # Measure occupied glyph rows. This avoids treating padding as font size and is
+ # more stable than individual connected components, whose strokes may merge or
+ # split with antialiasing. For multiline OCR, use the tallest ink band only.
+ active=np.flatnonzero(mask.sum(axis=1)>=max(2,round(mask.shape[1]*.01)))
+ if not len(active):return None
+ runs=[];start=previous=int(active[0])
+ for row in active[1:]:
+  row=int(row)
+  if row>previous+1:runs.append(previous-start+1);start=row
+  previous=row
+ runs.append(previous-start+1)
+ return float(max(runs))
+
 def refine_text_box(a,b):
  # OCR locates text; foreground pixels determine the visible ink bounds.
  x,y,w,h=b;pad=4
  box=[max(0,int(x)-pad),max(0,int(y)-pad),int(w)+pad*2+1,int(h)+pad*2+1]
- p=crop(a,box)
+ p,mask=glyph_mask(a,box)
  if not p.size:return b
- bg=background_color(a,box)
- distance=np.linalg.norm(p.astype(float)-bg,axis=2)
- mask=distance>max(24,float(np.percentile(distance,95))*.5)
  yy,xx=np.nonzero(mask)
  if len(xx)<8:return b
  refined=[box[0]+int(xx.min()),box[1]+int(yy.min()),int(xx.max()-xx.min()+1),int(yy.max()-yy.min()+1)]
@@ -161,18 +217,8 @@ def significant_color_change(a,b,threshold=12):
  return changed,evidence
 
 def weight_features(a,b):
- p=crop(a,b)
- if not p.size:return None
- bg=background_color(a,b);delta=np.linalg.norm(p.astype(float)-bg,axis=2)
- nonzero=delta[delta>6]
- if len(nonzero)<8:return None
- values=np.clip(nonzero,0,255).astype(np.uint8)
- threshold=max(16,float(cv2.threshold(values,0,255,cv2.THRESH_BINARY+cv2.THRESH_OTSU)[0]))
- mask=(delta>threshold).astype(np.uint8)
- count,labels,stats,_=cv2.connectedComponentsWithStats(mask,8)
- clean=np.zeros_like(mask)
- for i in range(1,count):
-  if stats[i,cv2.CC_STAT_AREA]>=2:clean[labels==i]=1
+ p,clean=glyph_mask(a,b)
+ if not p.size or not clean.any():return None
  yy,xx=np.nonzero(clean)
  if len(xx)<8:return None
  tight=clean[yy.min():yy.max()+1,xx.min():xx.max()+1]
@@ -183,6 +229,14 @@ def weight_features(a,b):
 def weight(a,b):
  f=weight_features(a,b)
  return f['strokeWidth'] if f else None
+
+def significant_weight_change(a,b,tolerance=1):
+ stroke=math.log(max(.01,b['strokeWidth'])/max(.01,a['strokeWidth']))
+ density=math.log(max(.01,b['inkDensity'])/max(.01,a['inkDensity']))
+ # Stroke width alone is unstable under scaling and antialiasing. A clear fill-density
+ # change is required so small screenshot rendering differences are not called weight changes.
+ changed=abs(density)>.20*tolerance and (stroke*density>=0 or abs(stroke)<.05)
+ return changed,stroke,density
 
 def overlay_boxes(a,texts):
  boxes=[]
@@ -213,6 +267,79 @@ def adaptive_geometry(box,design_width,implementation_width):
  if abs(center)<=max(12,design_width*.06):return implementation_width/2+center-w/2,w,'居中保持'
  if x+w/2<design_width/2:return left,w,'左侧锚定'
  return implementation_width-right-w,w,'右侧锚定'
+
+def union_box(a,b):
+ x=min(a[0],b[0]);y=min(a[1],b[1]);right=max(a[0]+a[2],b[0]+b[2]);bottom=max(a[1]+a[3],b[1]+b[3])
+ return [x,y,right-x,bottom-y]
+
+def spacing_differences(regions,pairs,design_width,implementation_width,cross,threshold):
+ matched=[(i,j) for i,j,_ in pairs];candidates=[]
+ for i,j in matched:
+  first=regions[0][i];qfirst=regions[1][j];x,y,w,h=first['box'];qx,qy,qw,qh=qfirst['box']
+  px,pw,_=adaptive_geometry(first['box'],design_width,implementation_width) if cross else (x,w,'同宽坐标')
+  nearest={'horizontal':None,'vertical':None}
+  for k,l in matched:
+   if k==i:continue
+   second=regions[0][k];qsecond=regions[1][l]
+   if coverage(first['box'],second['box'])>.12 or coverage(second['box'],first['box'])>.12:continue
+   xx,yy,ww,hh=second['box'];qxx,qyy,qww,qhh=qsecond['box']
+   pxx,pww,_=adaptive_geometry(second['box'],design_width,implementation_width) if cross else (xx,ww,'同宽坐标')
+   same_row=abs((y+h/2)-(yy+hh/2))<=max(7,min(h,hh)*.65)
+   q_same_row=abs((qy+qh/2)-(qyy+qhh/2))<=max(9,min(qh,qhh)*.8)
+   if same_row and q_same_row and xx>=x+w-1 and qxx>=qx+qw-1:
+    expected=pxx-(px+pw);actual=qxx-(qx+qw)
+    if -1<=expected<=220 and -1<=actual<=260 and (nearest['horizontal'] is None or expected<nearest['horizontal'][0]):nearest['horizontal']=(expected,actual,second,qsecond)
+   overlap=max(0,min(x+w,xx+ww)-max(x,xx));qoverlap=max(0,min(qx+qw,qxx+qww)-max(qx,qxx))
+   same_column=overlap>=min(w,ww)*.25 or abs((x+w/2)-(xx+ww/2))<=min(w,ww)*.45
+   q_same_column=qoverlap>=min(qw,qww)*.2 or abs((qx+qw/2)-(qxx+qww/2))<=min(qw,qww)*.55
+   if same_column and q_same_column and yy>=y+h-1 and qyy>=qy+qh-1:
+    expected=yy-(y+h);actual=qyy-(qy+qh)
+    if -1<=expected<=280 and -1<=actual<=340 and (nearest['vertical'] is None or expected<nearest['vertical'][0]):nearest['vertical']=(expected,actual,second,qsecond)
+  for axis,data in nearest.items():
+   if not data:continue
+   expected,actual,second,qsecond=data;delta=actual-expected
+   if abs(delta)<threshold or abs(delta)/max(8,abs(expected))<.12:continue
+   r={'box':union_box(first['box'],second['box']),'kind':'component','text':f'{first["text"]} ↔ {second["text"]}'}
+   s={'box':union_box(qfirst['box'],qsecond['box']),'kind':'component','text':r['text']}
+   candidates.append({'axis':axis,'expected':expected,'actual':actual,'delta':delta,'r':r,'s':s,'indices':(i,k),'priority':2 if first['kind']=='component' else 1})
+ candidates.sort(key=lambda item:(item['priority'],abs(item['delta'])),reverse=True)
+ selected=[]
+ for candidate in candidates:
+  if any(iou(candidate['r']['box'],kept['r']['box'])>.7 and abs(candidate['delta']-kept['delta'])<2 for kept in selected):continue
+  selected.append(candidate)
+  if len(selected)>=12:break
+ return selected
+
+def alignment_differences(regions,pairs,design_width,implementation_width,cross,threshold):
+ matched=[(i,j) for i,j,_ in pairs];candidates=[]
+ for offset,(i,j) in enumerate(matched):
+  first=regions[0][i];qfirst=regions[1][j];x,y,w,h=first['box'];qx,qy,qw,qh=qfirst['box']
+  px,pw,_=adaptive_geometry(first['box'],design_width,implementation_width) if cross else (x,w,'同宽坐标')
+  for k,l in matched[offset+1:]:
+   second=regions[0][k];qsecond=regions[1][l]
+   if coverage(first['box'],second['box'])>.12 or coverage(second['box'],first['box'])>.12:continue
+   xx,yy,ww,hh=second['box'];qxx,qyy,qww,qhh=qsecond['box']
+   pxx,pww,_=adaptive_geometry(second['box'],design_width,implementation_width) if cross else (xx,ww,'同宽坐标')
+   x_distance=abs((x+w/2)-(xx+ww/2));y_distance=abs((y+h/2)-(yy+hh/2))
+   qx_distance=abs((qx+qw/2)-(qxx+qww/2));qy_distance=abs((qy+qh/2)-(qyy+qhh/2))
+   projected_x_distance=abs((px+pw/2)-(pxx+pww/2))
+   vertical_stack=abs((y+h/2)-(yy+hh/2))>max(h,hh)*.8 and abs((y+h/2)-(yy+hh/2))<320
+   horizontal_row=abs((x+w/2)-(xx+ww/2))>max(w,ww)*.65 and abs((x+w/2)-(xx+ww/2))<420
+   if vertical_stack and projected_x_distance<=max(3,threshold*.55) and qx_distance-projected_x_distance>=threshold:
+    axis='horizontal_center';expected=projected_x_distance;actual=qx_distance
+   elif horizontal_row and y_distance<=max(3,threshold*.55) and qy_distance-y_distance>=threshold:
+    axis='vertical_center';expected=y_distance;actual=qy_distance
+   else:continue
+   r={'box':union_box(first['box'],second['box']),'kind':'component','text':f'{first["text"]} ↔ {second["text"]}'}
+   s={'box':union_box(qfirst['box'],qsecond['box']),'kind':'component','text':r['text']}
+   candidates.append({'axis':axis,'expected':expected,'actual':actual,'delta':actual-expected,'r':r,'s':s,'indices':(i,k)})
+ candidates.sort(key=lambda item:abs(item['delta']),reverse=True)
+ selected=[]
+ for candidate in candidates:
+  if any(iou(candidate['r']['box'],kept['r']['box'])>.7 and candidate['axis']==kept['axis'] for kept in selected):continue
+  selected.append(candidate)
+  if len(selected)>=12:break
+ return selected
 
 def analyze(design,implementation,config,out,progress,check):
  out=Path(out); warnings=[]; selected=config.get('categories',list(CATEGORIES)); start=time.monotonic()
@@ -294,7 +421,7 @@ def analyze(design,implementation,config,out,progress,check):
   warnings.append('对应区域过少，图片可能不是同一页面或状态；未匹配项仅供人工复核。')
  stage(3)
  tolerance={'strict':.65,'standard':1,'loose':1.8}[config.get('tolerance','standard')]
- pos=config.get('positionThreshold',2)*tolerance; size=config.get('sizeThreshold',3)/100*tolerance; color=max(10,max(12,config.get('colorThreshold',12))*tolerance)
+ pos=config.get('positionThreshold',2)*tolerance; spacing_threshold=config.get('spacingThreshold',4)*tolerance; size=config.get('sizeThreshold',3)/100*tolerance; color=max(10,max(12,config.get('colorThreshold',12))*tolerance)
  unit='逻辑单位' if known else '设计图基准 px'
  issues=[]
  def original_box(b,index):
@@ -313,14 +440,23 @@ def analyze(design,implementation,config,out,progress,check):
   return {'metric':name,'designValue':round(float(a),2),'implementationValue':round(float(b),2),'delta':round(float(b-a),2),'unit':u,'source':'local_image_measurement','certainty':'estimated' if estimate else 'measured'}
  for c in selected:
   cov[c]={'status':'checked','reason':'已检查可匹配的局部候选；不代表覆盖所有 UI 元素。'}
-  if c in ('text_size','font_weight','alignment'):
+  if c in ('text_size','font_weight'):
    cov[c]={'status':'partial' if not ocr_errors[0] and not ocr_errors[1] else 'unavailable','reason':'基于 OCR 可见字形与边界估计，需人工复核。' if not any(ocr_errors) else 'OCR 不完整，无法保证文字覆盖。'}
-  if c=='icon_shape':cov[c]={'status':'partial','reason':'基于非文本小轮廓候选，无法保证识别所有图标。'}
-  if cross and c in ('component_position','alignment'):
+  if c=='icon_shape':cov[c]={'status':'partial','reason':'基于非文本小轮廓候选，并排除照片及其内部轮廓；无法保证识别所有图标。'}
+  if cross and c in ('component_position','alignment','spacing'):
    cov[c]={'status':'partial','reason':'按左/右/居中/左右边距锚点估算目标宽度适配，断点与业务布局规则需人工复核。'}
  sameheight=abs(aa.shape[0]-bb.shape[0])<2
  if not sameheight:
   warnings.append('两侧内容高度不同：底部锚定区域可在设置中指定；未知锚定的纵向偏移仅作为候选。')
+ spacing_changes=spacing_differences(rs,pairs,aa.shape[1],bb.shape[1],cross,spacing_threshold)
+ spacing_members={index for item in spacing_changes for index in item['indices']}
+ alignment_changes=alignment_differences(rs,pairs,aa.shape[1],bb.shape[1],cross,pos)
+ alignment_members={index for item in alignment_changes for index in item['indices']}
+ pair_offsets={}
+ for i,j,_ in pairs:
+  r=rs[0][i];s=rs[1][j];x,y,rw,rh=r['box'];xx,yy,_,_=s['box'];expected_x=x
+  if cross:expected_x,_,_=adaptive_geometry(r['box'],aa.shape[1],bb.shape[1])
+  pair_offsets[(i,j)]=(xx-expected_x,yy-y,x+rw/2,y+rh/2)
  for i,j,cost in pairs:
   check(); r=rs[0][i];s=rs[1][j]; x,y,rw,rh=r['box'];xx,yy,sw,sh=s['box'];kind=r['kind']
   if min(y+rh,yy+sh)>h and (y>=h or yy>=h):continue
@@ -338,12 +474,18 @@ def analyze(design,implementation,config,out,progress,check):
   yq=(bb.shape[0]-yy-sh-config.get('implementation',{}).get('safeBottom',0)) if bottom else yy
   dy=yq-yp
   if abs(dx)>pos or abs(dy)>pos or (cross and kind!='text' and abs(sw-expected_w)>max(2,expected_w*size)):
-   cat='alignment' if kind=='text' else 'component_position'
-   title=('跨宽文字对齐不符合预期' if kind=='text' else '跨宽组件适配不符合预期') if cross else ('文字边缘偏移' if kind=='text' else '组件位置偏移')
-   if bottom:title='底部锚定间距偏差'
-   geometry=[metric('适配预期左边缘 x' if cross else '左边缘 x',expected_x,xx,estimate=cross),metric('距底部安全区' if bottom else '上边缘 y',yp,yq,estimate=cross)]
-   if cross and kind!='text':geometry.append(metric('适配预期宽度',expected_w,sw,estimate=True))
-   add(cat,title,r,s,geometry,(adaptation+'估算 · ' if cross else '')+('OCR 边界' if kind=='text' else '轮廓边界'),'检查目标宽度下的约束、边距、居中或拉伸规则。' if cross else '检查对应区域的内边距、约束或相对间距。',conf if sameheight or bottom else 'low')
+   row_context=kind=='text' and any(k!=i and coverage(r['box'],rs[0][k]['box'])<=.12 and coverage(rs[0][k]['box'],r['box'])<=.12 and abs((y+rh/2)-(rs[0][k]['box'][1]+rs[0][k]['box'][3]/2))<=max(8,rh*.8) and abs((x+rw/2)-(rs[0][k]['box'][0]+rs[0][k]['box'][2]/2))<360 for k,_,_ in pairs)
+   dedicated_relation=(i in spacing_members or i in alignment_members) and abs(dx)+abs(dy)<=max(12,spacing_threshold*2.5)
+   if not dedicated_relation:
+    spacing_move=kind=='text' and abs(dy)<=pos and row_context
+    layout_move=not spacing_move
+    cat='spacing' if spacing_move else 'component_position'
+    title=('跨宽行内间距分布不符合预期' if spacing_move else '跨宽组件排布不符合预期') if cross else ('同一行元素间距或分布变化' if spacing_move else '文字或按钮组件排布位置变化' if kind=='text' else '组件位置偏移')
+    if bottom:title='底部锚定间距偏差'
+    geometry=[metric('适配预期左边缘 x' if cross else '左边缘 x',expected_x,xx,estimate=cross),metric('距底部安全区' if bottom else '上边缘 y',yp,yq,estimate=cross)]
+    if cross and kind!='text':geometry.append(metric('适配预期宽度',expected_w,sw,estimate=True))
+    suggestion='核对同一行元素的 gap、margin、两端分布或内容宽度。' if spacing_move else '检查目标宽度下的约束、边距、居中或拉伸规则。' if cross else '检查对应区域的内边距、约束或相对间距。'
+    add(cat,title,r,s,geometry,(adaptation+'估算 · ' if cross else '')+('OCR 边界' if kind=='text' else '轮廓边界'),suggestion,conf if sameheight or bottom else 'low')
   if not cross and known:
    da=config.get('design',{}); ib=config.get('implementation',{})
    dt=da.get('safeTop',0); db=da.get('safeBottom',0);it=ib.get('safeTop',0);bottomInset=ib.get('safeBottom',0)
@@ -351,25 +493,44 @@ def analyze(design,implementation,config,out,progress,check):
    violation=(it>0 and yy<it and yy+sh>it) or (bottomInset>0 and yy+sh>bb.shape[0]-bottomInset and yy<bb.shape[0]-bottomInset)
    if design_inside and violation:
     add('component_position','疑似侵入安全区',r,s,[metric('上边缘 y',y,yy),metric('下边缘 y',y+rh,yy+sh)],'用户提供的安全区与可见元素边界','核对 App 内容与安全区约束；需确认该区域属于 App 内容。','low')
-  if kind=='text' and abs(sh/rh-1)>size and abs(sh-rh)>1:
-   add('text_size','疑似字号'+('偏大' if sh>rh else '偏小'),r,s,[metric('可见字形高度',rh,sh,estimate=True)],'OCR 字形边界','核对原生字号、字体和系统字体缩放；字形高度不是实际字号。','medium')
-  ca=sampled_color(aa,r['box'],kind=='text');cb=sampled_color(bb,s['box'],kind=='text')
+  if kind in ('component','image') and not cross and (abs(sw/rw-1)>max(size,.05) or abs(sh/rh-1)>max(size,.05)) and abs(sw-rw)+abs(sh-rh)>2:
+   image=kind=='image';name='图片' if image else '按钮或组件'
+   add('component_position',name+'尺寸不一致',r,s,[metric(name+'宽度',rw,sw),metric(name+'高度',rh,sh)],'图片外边界' if image else '包含文字或横向矩形的组件轮廓','核对图片容器和裁切规则。' if image else '核对按钮或组件的宽高、内边距、最小尺寸与布局约束。',conf)
+  if kind=='text':
+   design_glyph_height=glyph_height(aa,r['box']);implementation_glyph_height=glyph_height(bb,s['box']);text_size_threshold=max(size,.07)
+   box_ink_consistent=bool(design_glyph_height and implementation_glyph_height and abs(design_glyph_height/max(1,rh)-implementation_glyph_height/max(1,sh))<=.22)
+   same_text=SequenceMatcher(None,normalized_text(r['text']),normalized_text(s['text'])).ratio()>=.9
+   height_scale=implementation_glyph_height/design_glyph_height-1 if design_glyph_height and implementation_glyph_height else 0
+   width_scale=sw/rw-1
+   width_supports_size=height_scale*width_scale>0 and abs(width_scale)>=.05
+   if box_ink_consistent and same_text and width_supports_size and abs(height_scale)>max(text_size_threshold,.12) and abs(implementation_glyph_height-design_glyph_height)>=3:
+    add('text_size','疑似字号'+('偏大' if implementation_glyph_height>design_glyph_height else '偏小'),r,s,[metric('字符主体墨迹高度',design_glyph_height,implementation_glyph_height,estimate=True)],'OCR 定位 · 去除按钮边框与长线 · 字符连通域主体高度','核对原生字号和系统字体缩放；测量只使用字符墨迹，不包含行距、上下留白或按钮边框。','medium')
+  # Photo colors depend on source content, compression, and color profile; they
+  # are not UI color tokens and should not create local color issues.
+  ca=sampled_color(aa,r['box'],kind=='text') if kind!='image' else None;cb=sampled_color(bb,s['box'],kind=='text') if kind!='image' else None
   if ca is not None and cb is not None:
    changed,color_data=significant_color_change(ca,cb,color)
    if changed:
     ha='#'+''.join(f'{int(v):02X}' for v in ca); hb='#'+''.join(f'{int(v):02X}' for v in cb)
     measurements=[{'metric':'截图采样色','designValue':ha,'implementationValue':hb,'delta':round(color_data['deltaE'],2),'unit':'ΔE00','source':'interior_pixel_sampling','certainty':'measured'},{'metric':'色相角差','designValue':0,'implementationValue':round(color_data['hueDelta'],1),'delta':round(color_data['hueDelta'],1),'unit':'°','source':'HSV hue distance','certainty':'estimated'}]
     add('color','文字颜色明显不同' if kind=='text' else '区域颜色明显不同',r,s,measurements,'稳定区域采样 · sRGB 归一化 · CIEDE2000 与色相角','核对对应色值与透明度；已忽略常见设备色域、亮度和饱和度的小幅漂移。',conf)
-  if kind=='text' and abs(sh/rh-1)<.35 and abs(sw/rw-1)<.25 and ca is not None and cb is not None and np.linalg.norm(ca-cb)<45:
+  weight_text_consistent=kind=='text' and SequenceMatcher(None,normalized_text(r['text']),normalized_text(s['text'])).ratio()>=.9 and box_ink_consistent
+  if weight_text_consistent and abs(sh/rh-1)<.35 and abs(sw/rw-1)<.25 and ca is not None and cb is not None and np.linalg.norm(ca-cb)<45:
    wa=weight_features(aa,r['box']);wb=weight_features(bb,s['box'])
    if wa and wb:
-    stroke=math.log(max(.01,wb['strokeWidth'])/max(.01,wa['strokeWidth']));density=math.log(max(.01,wb['inkDensity'])/max(.01,wa['inkDensity']))
-    agree=stroke*density>=0 or abs(stroke)<.04 or abs(density)<.04;threshold=.105*tolerance
-    if agree and (abs(stroke)>threshold or abs(density)>threshold) and (abs(stroke)+abs(density))/2>.08*tolerance:
-     direction=wb['strokeWidth']+wb['inkDensity']*4>wa['strokeWidth']+wa['inkDensity']*4
+    changed_weight,stroke,density=significant_weight_change(wa,wb,tolerance)
+    enough_weight_evidence=abs(stroke)>.18*tolerance or min(len(normalized_text(r['text'])),len(normalized_text(s['text'])))>=6
+    if changed_weight and enough_weight_evidence:
+     direction=density>0
      add('font_weight','疑似字重'+('偏粗' if direction else '偏细'),r,s,[metric('笔画宽度估计',wa['strokeWidth'],wb['strokeWidth'],estimate=True),metric('字形墨色密度',wa['inkDensity'],wb['inkDensity'],'比例',True)],'前景分割 · 笔画距离变换 · 字形墨色密度','核对字体文件、fontWeight、可变字体轴与文字渲染方式。','medium' if max(abs(stroke),abs(density))>.16 else 'low')
   if kind=='icon' and abs((sw/sh)/(rw/rh)-1)>max(size,.06) and abs(sw-rw)+abs(sh-rh)>2:
    add('icon_shape','疑似 Icon 非等比形变',r,s,[metric('宽高比',rw/rh,sw/sh,'比例'),metric('轮廓宽度',rw,sw),metric('轮廓高度',rh,sh)],'保留比例的轮廓测量','核对图标资源与宽高约束；区分图案变化和非等比拉伸。','medium')
+ for item in spacing_changes:
+  axis='横向' if item['axis']=='horizontal' else '纵向'
+  add('spacing',f'{axis}元素间距不一致',item['r'],item['s'],[metric(('适配预期' if cross else '设计稿')+axis+'间距',item['expected'],item['actual'],estimate=cross)],('跨宽锚点估算 · ' if cross else '')+'相邻元素边缘距离','核对相邻组件的 margin、gap、内外边距或布局约束。','medium')
+ for item in alignment_changes:
+  relation='上下元素的水平中心线' if item['axis']=='horizontal_center' else '左右元素的垂直中心线'
+  add('alignment',f'{relation}未对齐',item['r'],item['s'],[metric(relation+'偏差',item['expected'],item['actual'],estimate=cross)],('跨宽锚点估算 · ' if cross else '')+'元素中心点关系','核对容器的居中、align-items、基线或约束关系。','medium')
  # Do not call offscreen content missing, or flood reports with unmatched contour noise.
  if not cross and not incompatible:
   for index,unmatched in ((0,missing),(1,extra)):
@@ -390,4 +551,4 @@ def analyze(design,implementation,config,out,progress,check):
     remove.add(q['id']);break
  issues=[q for q in issues if q['id'] not in remove]
  stage(4)
- return {'status':'partial' if any(cov[c]['status']!='checked' for c in selected) else 'completed','issues':issues,'coverage':cov,'warnings':warnings,'transforms':maps,'metadata':metadata,'ignoredOverlays':ignored,'mode':'cross_width_reference' if cross else 'same_width','normalizedSizes':[[a.shape[1],a.shape[0]] for a in imgs],'duration':round(time.monotonic()-start,1),'candidateCounts':[len(r) for r in rs],'matchedCandidates':len(pairs),'unit':unit,'analyzerVersion':'1.2.0'}
+ return {'status':'partial' if any(cov[c]['status']!='checked' for c in selected) else 'completed','issues':issues,'coverage':cov,'warnings':warnings,'transforms':maps,'metadata':metadata,'ignoredOverlays':ignored,'mode':'cross_width_reference' if cross else 'same_width','normalizedSizes':[[a.shape[1],a.shape[0]] for a in imgs],'duration':round(time.monotonic()-start,1),'candidateCounts':[len(r) for r in rs],'matchedCandidates':len(pairs),'unit':unit,'analyzerVersion':'1.4.0'}

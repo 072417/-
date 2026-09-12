@@ -66,6 +66,7 @@ class Config(BaseModel):
  tolerance: str='standard'
  categories: List[str]=list(CATEGORIES)
  positionThreshold:float=Field(2,ge=.1,le=100)
+ spacingThreshold:float=Field(4,ge=.1,le=100)
  sizeThreshold:float=Field(3,ge=.1,le=100)
  colorThreshold:float=Field(12,ge=.1,le=100)
  bottomAnchorFrom:Optional[float]=Field(None,ge=0,le=30000)

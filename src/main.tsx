@@ -1,9 +1,53 @@
 import React, {useEffect,useState,useRef,useMemo} from 'react';
 import {createRoot} from 'react-dom/client';
-import {IconAdjustmentsHorizontal,IconArrowLeft,IconArrowRight,IconArrowsExchange,IconCheck,IconChevronDown,IconChevronRight,IconCircleCheck,IconClock,IconColumns2,IconCrop,IconDownload,IconEye,IconEyeOff,IconFileDescription,IconFocus2,IconHistory,IconLayoutDashboard,IconLayersIntersect,IconLoader2,IconMaximize,IconPhoto,IconPlus,IconRefresh,IconScan,IconSearch,IconSettings,IconShieldCheck,IconSlideshow,IconSparkles,IconTrash,IconUpload,IconX,IconZoomIn,IconZoomOut,IconAlertTriangle,IconDeviceMobile,IconFilter,IconPencil,IconPlayerPlay,IconColorSwatch,IconTypography,IconAlignLeft,IconShape,IconArrowsMove} from '@tabler/icons-react';
+import IconAdjustmentsHorizontal from '@tabler/icons-react/dist/esm/icons/IconAdjustmentsHorizontal.mjs';
+import IconArrowLeft from '@tabler/icons-react/dist/esm/icons/IconArrowLeft.mjs';
+import IconArrowRight from '@tabler/icons-react/dist/esm/icons/IconArrowRight.mjs';
+import IconArrowsExchange from '@tabler/icons-react/dist/esm/icons/IconArrowsExchange.mjs';
+import IconCheck from '@tabler/icons-react/dist/esm/icons/IconCheck.mjs';
+import IconChevronDown from '@tabler/icons-react/dist/esm/icons/IconChevronDown.mjs';
+import IconChevronRight from '@tabler/icons-react/dist/esm/icons/IconChevronRight.mjs';
+import IconCircleCheck from '@tabler/icons-react/dist/esm/icons/IconCircleCheck.mjs';
+import IconClock from '@tabler/icons-react/dist/esm/icons/IconClock.mjs';
+import IconColumns2 from '@tabler/icons-react/dist/esm/icons/IconColumns2.mjs';
+import IconCrop from '@tabler/icons-react/dist/esm/icons/IconCrop.mjs';
+import IconDownload from '@tabler/icons-react/dist/esm/icons/IconDownload.mjs';
+import IconEye from '@tabler/icons-react/dist/esm/icons/IconEye.mjs';
+import IconEyeOff from '@tabler/icons-react/dist/esm/icons/IconEyeOff.mjs';
+import IconFileDescription from '@tabler/icons-react/dist/esm/icons/IconFileDescription.mjs';
+import IconFocus2 from '@tabler/icons-react/dist/esm/icons/IconFocus2.mjs';
+import IconHistory from '@tabler/icons-react/dist/esm/icons/IconHistory.mjs';
+import IconLayoutDashboard from '@tabler/icons-react/dist/esm/icons/IconLayoutDashboard.mjs';
+import IconLayersIntersect from '@tabler/icons-react/dist/esm/icons/IconLayersIntersect.mjs';
+import IconLoader2 from '@tabler/icons-react/dist/esm/icons/IconLoader2.mjs';
+import IconMaximize from '@tabler/icons-react/dist/esm/icons/IconMaximize.mjs';
+import IconPhoto from '@tabler/icons-react/dist/esm/icons/IconPhoto.mjs';
+import IconPlus from '@tabler/icons-react/dist/esm/icons/IconPlus.mjs';
+import IconRefresh from '@tabler/icons-react/dist/esm/icons/IconRefresh.mjs';
+import IconScan from '@tabler/icons-react/dist/esm/icons/IconScan.mjs';
+import IconSearch from '@tabler/icons-react/dist/esm/icons/IconSearch.mjs';
+import IconSettings from '@tabler/icons-react/dist/esm/icons/IconSettings.mjs';
+import IconShieldCheck from '@tabler/icons-react/dist/esm/icons/IconShieldCheck.mjs';
+import IconSlideshow from '@tabler/icons-react/dist/esm/icons/IconSlideshow.mjs';
+import IconSparkles from '@tabler/icons-react/dist/esm/icons/IconSparkles.mjs';
+import IconTrash from '@tabler/icons-react/dist/esm/icons/IconTrash.mjs';
+import IconUpload from '@tabler/icons-react/dist/esm/icons/IconUpload.mjs';
+import IconX from '@tabler/icons-react/dist/esm/icons/IconX.mjs';
+import IconZoomIn from '@tabler/icons-react/dist/esm/icons/IconZoomIn.mjs';
+import IconZoomOut from '@tabler/icons-react/dist/esm/icons/IconZoomOut.mjs';
+import IconAlertTriangle from '@tabler/icons-react/dist/esm/icons/IconAlertTriangle.mjs';
+import IconDeviceMobile from '@tabler/icons-react/dist/esm/icons/IconDeviceMobile.mjs';
+import IconFilter from '@tabler/icons-react/dist/esm/icons/IconFilter.mjs';
+import IconPencil from '@tabler/icons-react/dist/esm/icons/IconPencil.mjs';
+import IconPlayerPlay from '@tabler/icons-react/dist/esm/icons/IconPlayerPlay.mjs';
+import IconColorSwatch from '@tabler/icons-react/dist/esm/icons/IconColorSwatch.mjs';
+import IconTypography from '@tabler/icons-react/dist/esm/icons/IconTypography.mjs';
+import IconAlignLeft from '@tabler/icons-react/dist/esm/icons/IconAlignLeft.mjs';
+import IconShape from '@tabler/icons-react/dist/esm/icons/IconShape.mjs';
+import IconArrowsMove from '@tabler/icons-react/dist/esm/icons/IconArrowsMove.mjs';
 import {Asset,Config,Health,Issue,Run,Side,api,categories,newConfig,reviews,statuses,widths} from './types';
 import './style.css';
-const icons:Record<string,typeof IconPhoto>={text_size:IconTypography,font_weight:IconTypography,alignment:IconAlignLeft,color:IconColorSwatch,icon_shape:IconShape,component_position:IconArrowsMove};
+const icons:Record<string,typeof IconPhoto>={text_size:IconTypography,font_weight:IconTypography,alignment:IconAlignLeft,color:IconColorSwatch,icon_shape:IconShape,component_position:IconArrowsMove,spacing:IconColumns2};
 const conf:Record<string,string>={high:'高可信',medium:'中可信',low:'待人工判断'};
 const severity:Record<string,string>={high:'高',medium:'中',low:'低'};
 const stages=['预处理图片','建立图像对应','识别文字与组件','测量视觉差异','整理问题证据'];
@@ -32,7 +76,7 @@ function App(){
   <div className="upload-bottom"><span><IconShieldCheck size={16}/>默认在本机处理，不上传外部 AI</span><button className="text-button" onClick={()=>setSettings(true)}><IconAdjustmentsHorizontal size={17}/>高级设置<IconChevronRight size={15}/></button></div></div>
   <div className="setup-line"><div className="task-name"><label htmlFor="task-name">走查名称</label><input id="task-name" value={name} onChange={e=>setName(e.target.value)} placeholder="例如：运动 App · 首页验收" maxLength={100}/></div><div className="preset"><label htmlFor="tolerance">检测容差</label><select id="tolerance" value={config.tolerance} onChange={e=>setConfig(c=>({...c,tolerance:e.target.value}))}><option value="strict">严格</option><option value="standard">标准</option><option value="loose">宽松</option></select></div><button className="button primary start-button" disabled={!assets.design||!assets.implementation||!!busy||!online||!config.categories.length} onClick={start}>{busy==='start'?<IconLoader2 size={18} className="spin"/>:<IconScan size={18}/>}开始走查<IconArrowRight size={17}/></button></div>
   {config.design.logicalWidth&&config.implementation.logicalWidth&&config.design.logicalWidth!==config.implementation.logicalWidth?<div className="inline-note warning"><IconAlertTriangle size={17}/>当前为跨宽适配走查，将按左侧、右侧、居中或左右边距关系估算目标位置。</div>:<div className="inline-note"><IconFocus2 size={17}/>建议使用同一页面与状态；不同逻辑宽度会自动估算屏幕适配。</div>}
-  <section className="checks-section"><div className="small-section-heading"><h2>关注六类视觉偏差</h2><span>每条问题都关联双图证据</span></div><div className="checks-grid">{Object.entries(categories).slice(0,6).map(([key,label])=>{const I=icons[key];return <button key={key} className={'check-type '+(config.categories.includes(key)?'enabled':'')} onClick={()=>setConfig(c=>({...c,categories:c.categories.includes(key)?c.categories.filter(x=>x!==key):[...c.categories,key]}))}><I size={21}/><span>{label}</span>{config.categories.includes(key)&&<IconCheck size={13}/>}</button>})}</div><div className="coverage-note">字号与字重以图像证据估计，具体原生样式需人工核对。</div></section>
+  <section className="checks-section"><div className="small-section-heading"><h2>关注七类视觉偏差</h2><span>每条问题都关联双图证据</span></div><div className="checks-grid">{Object.entries(categories).slice(0,7).map(([key,label])=>{const I=icons[key];return <button key={key} className={'check-type '+(config.categories.includes(key)?'enabled':'')} onClick={()=>setConfig(c=>({...c,categories:c.categories.includes(key)?c.categories.filter(x=>x!==key):[...c.categories,key]}))}><I size={21}/><span>{label}</span>{config.categories.includes(key)&&<IconCheck size={13}/>}</button>})}</div><div className="coverage-note">字号与字重以图像证据估计，具体原生样式需人工核对。</div></section>
   {history.length>0&&<section className="recent"><div className="small-section-heading"><h2>最近走查</h2><button className="text-button" onClick={()=>setView('history')}>查看全部<IconArrowRight size={15}/></button></div>{history.slice(0,3).map(r=><button className="recent-row" key={r.id} onClick={()=>loadRun(r.id)}><span className="recent-icon"><IconDeviceMobile size={20}/></span><span><b>{r.name}</b><small>{r.config.design.logicalWidth||'未知'} → {r.config.implementation.logicalWidth||'未知'} · {formatDate(r.createdAt)}</small></span><span className="recent-status">{statuses[r.status]}</span><IconChevronRight size={16}/></button>)}</section>}
   </div>}
   {view==='history'&&<div className="history-page"><div className="page-heading"><div><h1>走查记录</h1><p>每次分析独立保存，保留原图、证据与复核状态。</p></div><button className="button primary" onClick={newTask}><IconPlus size={18}/>新建走查</button></div><div className="width-tabs"><button onClick={()=>setWidthFilter('all')} className={widthFilter==='all'?'active':''}>全部</button>{widths.map(w=><button className={widthFilter===String(w)?'active':''} key={w} onClick={()=>setWidthFilter(String(w))}>{w}</button>)}</div><div className="history-list">{history.filter(r=>widthFilter==='all'||String(r.config.implementation.logicalWidth)===widthFilter).map(r=><div className="history-row" key={r.id}><button className="history-open" onClick={()=>loadRun(r.id)}><img src={r.implementation.url} alt="开发截图缩略图"/><span><b>{r.name}</b><small>{r.config.design.logicalWidth||'未知'} → {r.config.implementation.logicalWidth||'未知'} 逻辑宽度 · {r.design.width} × {r.design.height} px</small><small>{formatDate(r.createdAt)} · {statuses[r.status]} · {r.issueCount} 个候选问题</small></span></button><IconButton title="重命名" onClick={()=>{setRenameRun(r);setRenameValue(r.name)}}><IconPencil size={17}/></IconButton><IconButton title="删除记录" onClick={()=>setDeleteId(r.id)}><IconTrash size={17}/></IconButton></div>)}{!history.some(r=>widthFilter==='all'||String(r.config.implementation.logicalWidth)===widthFilter)&&<div className="empty"><IconHistory size={32}/><h3>暂无走查记录</h3><p>上传这个宽度的真实截图，开始一次走查。</p></div>}</div></div>}
