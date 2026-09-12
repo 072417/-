@@ -4,7 +4,7 @@ COPY package*.json ./
 RUN npm ci
 COPY tsconfig.json vite.config.ts index.html ./
 COPY src ./src
-COPY public ./public
+RUN mkdir -p public
 RUN npm run build
 
 FROM python:3.11-slim-bookworm
@@ -19,4 +19,4 @@ ENV DESIGN_REVIEW_DATA=/data PUBLIC_MODE=true COOKIE_SECURE=true PYTHONUNBUFFERE
 USER appuser
 EXPOSE 8765
 HEALTHCHECK --interval=30s --timeout=5s CMD python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8765/api/health')"
-CMD ["python","-m","uvicorn","server.app:app","--host","0.0.0.0","--port","8765","--proxy-headers","--forwarded-allow-ips","*"]
+CMD ["python","-m","uvicorn","server.app:app","--host","0.0.0.0","--port","8765","--proxy-headers"]

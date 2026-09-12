@@ -27,3 +27,5 @@ secrets
 *.sqlite*
 *.db
 .DS_Store
+
+.vercel

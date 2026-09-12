@@ -1,0 +1,20 @@
+# Run behind your hosting provider's HTTPS ingress. Mount /data persistently.
+services:
+  backend:
+    build: .
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8765:8765"
+    environment:
+      PUBLIC_MODE: "true"
+      COOKIE_SECURE: "true"
+      DESIGN_REVIEW_DATA: /data
+      ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:?Set the exact Vercel frontend origin}
+      VISION_BASE_URL: ${VISION_BASE_URL:-}
+      VISION_MODEL: ${VISION_MODEL:-}
+      VISION_API_KEY: ${VISION_API_KEY:-}
+    volumes:
+      - review_data:/data
+    mem_limit: 2g
+volumes:
+  review_data:

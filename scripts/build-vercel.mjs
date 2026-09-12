@@ -1,0 +1,10 @@
+import {mkdir, cp, writeFile, rm} from 'node:fs/promises';
+import {execFileSync} from 'node:child_process';
+import {deploymentConfig} from './vercel-config.mjs';
+const config = deploymentConfig(process.env.BACKEND_ORIGIN);
+execFileSync('npm', ['run', 'build'], {stdio: 'inherit'});
+await rm('.vercel/output', {recursive: true, force: true});
+await mkdir('.vercel/output/static', {recursive: true});
+await cp('dist', '.vercel/output/static', {recursive: true});
+await writeFile('.vercel/output/config.json', JSON.stringify(config, null, 2));
+console.log('Vercel static output and backend proxy routes prepared.');

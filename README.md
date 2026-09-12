@@ -41,3 +41,7 @@ npm start
 - 浏览器公共版不继承服务器版测试指标，另行验证。
 
 测试命令：`.venv/bin/python -m pytest tests/test_engine.py -q`、`.venv/bin/python -m pytest tests/test_public.py -q`、`npm run test:ui`。公共会话测试须独立进程运行，测试隔离目录不含实际用户数据。
+
+## Vercel 前端与独立后端
+
+详见 [部署说明](deploy/VERCEL.md)。必须先配置具有持久磁盘的 HTTPS Python 后端，再设置 Vercel 的 `BACKEND_ORIGIN`。

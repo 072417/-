@@ -19,6 +19,7 @@ DATA=Path(os.getenv('DESIGN_REVIEW_DATA',str(ROOT/'.data'))).resolve()
 FILES=DATA/'files';FILES.mkdir(parents=True,exist_ok=True)
 DB=DATA/'review.sqlite3'
 PUBLIC=os.getenv('PUBLIC_MODE','false').lower()=='true'
+ALLOWED_ORIGINS={v.strip().rstrip('/') for v in os.getenv('ALLOWED_ORIGINS','').split(',') if v.strip()}
 RATE={};RATE_LOCK=threading.Lock()
 LOCK=threading.RLock(); POOL=ThreadPoolExecutor(max_workers=2); CANCEL={}
 
@@ -92,10 +93,11 @@ async def local_origin(request:Request,call_next):
    entries.append(stamp)
  if request.method in ('POST','PATCH','DELETE','PUT'):
   origin=request.headers.get('origin')
-  if origin and urlparse(origin).netloc!=request.headers.get('host') and urlparse(origin).netloc not in ('127.0.0.1:5173','localhost:5173'):
+  if origin and origin not in ALLOWED_ORIGINS and origin!=str(request.base_url).rstrip('/') and not (not PUBLIC and origin in ('http://127.0.0.1:5173','http://localhost:5173')):
    return JSONResponse({'detail':'不允许跨站写入本地走查数据'},403)
  response=await call_next(request)
  if PUBLIC and fresh:response.set_cookie('review_session',request.state.owner,max_age=60*60*24*30,httponly=True,secure=os.getenv('COOKIE_SECURE','true').lower()=='true',samesite='lax')
+ if request.url.path.startswith(('/api/','/assets-store/')):response.headers['Cache-Control']='private, no-store'
  response.headers['X-Content-Type-Options']='nosniff'
  response.headers['Referrer-Policy']='same-origin'
  return response

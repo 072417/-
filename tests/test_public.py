@@ -45,3 +45,14 @@ def test_bad_upload_and_csrf():
  with TestClient(app) as a:
   assert a.post('/api/assets',files={'file':('bad.png',b'broken','image/png')}).status_code==400
   assert a.post('/api/demo',headers={'Origin':'https://unrelated.example'}).status_code==403
+
+
+def test_proxy_origin_and_private_cache(monkeypatch):
+ import server.app as backend
+ monkeypatch.setattr(backend, 'ALLOWED_ORIGINS', {'https://review.example'})
+ with TestClient(app) as client:
+  assert client.get('/api/health').headers['cache-control']=='private, no-store'
+  invalid={'file':('bad.png',b'broken','image/png')}
+  assert client.post('/api/assets',files=invalid,headers={'Origin':'https://review.example'}).status_code==400
+  for origin in ['https://review.example.evil.test','http://review.example','http://localhost:5173','null']:
+   assert client.post('/api/assets',files=invalid,headers={'Origin':origin}).status_code==403
