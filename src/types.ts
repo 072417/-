@@ -1,0 +1,14 @@
+export const categories:Record<string,string>={text_size:'文字大小',font_weight:'字重',alignment:'对齐',color:'颜色',icon_shape:'Icon 形变',component_position:'组件位置',missing:'未匹配内容',extra:'额外内容'};
+export const widths=[360,375,390,414,430];
+export type Asset={id:string;name:string;width:number;height:number;url:string;hash:string;colorNote:string};
+export type Side={logicalWidth:number|null;effectiveScale:number|null;platform:string;crop:number[]|null;ignore:number[][];safeTop:number;safeBottom:number};
+export type Config={design:Side;implementation:Side;tolerance:string;categories:string[];positionThreshold:number;sizeThreshold:number;colorThreshold:number;bottomAnchorFrom:number|null;conditions:{different:boolean};useAI:boolean};
+export const newSide=():Side=>({logicalWidth:null,effectiveScale:null,platform:'unknown',crop:null,ignore:[],safeTop:0,safeBottom:0});
+export const newConfig=():Config=>({design:newSide(),implementation:newSide(),tolerance:'standard',categories:Object.keys(categories).slice(0,6),positionThreshold:2,sizeThreshold:3,colorThreshold:3,bottomAnchorFrom:null,conditions:{different:false},useAI:false});
+export type BBox={x:number;y:number;width:number;height:number};
+export type Issue={id:string;category:string;title:string;regionLabel:string;severity:string;confidence:string;rationale:string;status:string;designBBox:BBox|null;implementationBBox:BBox|null;measurements:{metric:string;designValue:number|string;implementationValue:number|string;delta:number;unit:string;certainty:string}[];method:string;suggestion:string;aiExplanation?:string};
+export type Run={id:string;comparisonId:string;name:string;status:string;stage:number;createdAt:string;design:Asset;implementation:Asset;config:Config;issues:Issue[];issueCount?:number;coverage:Record<string,{status:string;reason:string}>;warnings:string[];mode?:string;normalizedSizes?:number[][];transforms?:{scale:number;origin:number[];originalSize:number[];logicalKnown:boolean}[];duration?:number;error?:string;unit?:string;matchedCandidates?:number};
+export type Health={ocr:boolean;ai:boolean;provider?:string;model?:string};
+export const statuses:Record<string,string>={queued:'等待分析',running:'正在分析',completed:'检查完成',partial:'部分检查完成',needs_alignment:'需要校准',failed:'分析失败',cancelled:'已取消'};
+export const reviews:Record<string,string>={pending:'待复核',confirmed:'已确认',ignored:'已忽略',marked_fixed:'已处理'};
+export async function api<T>(path:string,options:RequestInit={}):Promise<T>{const r=await fetch('/api'+path,{...options,headers:options.body instanceof FormData?options.headers:{'Content-Type':'application/json',...options.headers}});if(!r.ok){let error='请求失败';try{const d=await r.json();error=typeof d.detail==='string'?d.detail:'输入格式有误，请检查设置';}catch{error=`服务暂不可用 (${r.status})`;}throw new Error(error);}return r.json();}

@@ -1,0 +1,35 @@
+services:
+  app:
+    build: .
+    restart: unless-stopped
+    environment:
+      PUBLIC_MODE: "true"
+      COOKIE_SECURE: "true"
+      DESIGN_REVIEW_DATA: /data
+      VISION_BASE_URL: ${VISION_BASE_URL:-}
+      VISION_MODEL: ${VISION_MODEL:-}
+      VISION_API_KEY: ${VISION_API_KEY:-}
+    volumes:
+      - review_data:/data
+    expose:
+      - "8765"
+    mem_limit: 2g
+    cpus: 2
+  web:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    environment:
+      SITE_DOMAIN: ${SITE_DOMAIN:?Set SITE_DOMAIN in .env}
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - app
+volumes:
+  review_data:
+  caddy_data:
+  caddy_config:
