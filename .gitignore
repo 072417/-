@@ -1,0 +1,71 @@
+# Dependencies and build output
+node_modules/
+.venv/
+venv/
+dist/
+build/
+*.tsbuildinfo
+server/ocr-helper
+
+# Python and test caches
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+coverage/
+test-results/
+playwright-report/
+
+# Environment files (only sanitized examples are versioned)
+.env
+.env.*
+!.env.example
+!.env.*.example
+.envrc
+
+# Uploaded screenshots, review history and local databases
+.data/
+*.db
+*.db-*
+*.sqlite
+*.sqlite3
+*.sqlite3-*
+*.sqlite-*
+backups/
+
+# Credentials and private certificates
+*.pem
+*.key
+*.p12
+*.pfx
+*.keystore
+id_rsa*
+id_ed25519*
+credentials.json
+credentials.*.json
+service-account*.json
+secrets/
+.secrets/
+.npmrc
+.netrc
+
+# Local runtime and hosting state
+.sites-runtime/
+.openai/
+.wrangler/
+*.log
+*.pid
+
+# OS and editor files
+.DS_Store
+.AppleDouble
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
