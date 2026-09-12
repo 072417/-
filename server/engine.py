@@ -11,7 +11,8 @@ from skimage.color import rgb2lab, deltaE_ciede2000
 CATEGORIES = {'text_size':'文字大小','font_weight':'字重','alignment':'对齐','color':'颜色','icon_shape':'Icon 形变','component_position':'组件位置'}
 HELPER = Path(__file__).with_name('ocr-helper')
 MOBILE_WIDTHS = (360,375,390,414,430)
-TEST_OVERLAY = re.compile(r'(?i)(?:^|[^a-z0-9])(?:c\s*[b8][a4]se|leg[o0])(?:[^a-z0-9]|$)')
+TEST_OVERLAY = re.compile(r'(?i)(?:^|[^a-z0-9])(?:c\s*[b8][a4]se|leg[o0]|容器)(?:[^a-z0-9]|$)')
+LONG_TEST_ID = re.compile(r'\d{7,}|(?i:pin)[a-z0-9:/_-]{4,}|(?=[a-z0-9:/_-]{10,})(?=[a-z0-9:/_-]*[a-z])(?=[a-z0-9:/_-]*\d)[a-z0-9:/_-]+')
 
 def crop(a,b):
  x,y,w,h = [int(round(v)) for v in b]
@@ -142,6 +143,23 @@ def sampled_color(a,b,text=False):
  top=values[np.argmax(counts)];pixels=pixels[np.all(quant==top,axis=1)]
  return np.median(pixels,axis=0)
 
+def color_evidence(a,b):
+ lab=rgb2lab(np.array([a,b],dtype=float).reshape(1,2,3)/255)[0]
+ de=float(deltaE_ciede2000(lab[0][None,None,:],lab[1][None,None,:])[0,0])
+ hsv=cv2.cvtColor(np.array([[a,b]],dtype=np.uint8),cv2.COLOR_RGB2HSV)[0]
+ hue=abs(float(hsv[0,0])-float(hsv[1,0]))*2;hue=min(hue,360-hue)
+ saturation_delta=abs(float(hsv[0,1])-float(hsv[1,1]))/255
+ value_delta=abs(float(hsv[0,2])-float(hsv[1,2]))/255
+ chroma=min(float(hsv[0,1]),float(hsv[1,1]))/255
+ return {'deltaE':de,'hueDelta':hue,'saturationDelta':saturation_delta,'valueDelta':value_delta,'chroma':chroma}
+
+def significant_color_change(a,b,threshold=12):
+ evidence=color_evidence(a,b)
+ # Device gamut and screenshot rendering often shift brightness/saturation a little.
+ # Report hue changes for colored UI, or a very large perceptual change regardless of hue.
+ changed=evidence['deltaE']>=threshold and ((evidence['chroma']>=.12 and evidence['hueDelta']>=12) or evidence['deltaE']>=22 or evidence['valueDelta']>=.28)
+ return changed,evidence
+
 def weight_features(a,b):
  p=crop(a,b)
  if not p.size:return None
@@ -169,11 +187,25 @@ def weight(a,b):
 def overlay_boxes(a,texts):
  boxes=[]
  for t in texts:
-  if not TEST_OVERLAY.search(t.get('text','')):continue
-  x,y,w,h=t['box'];px=max(18,h*2.2);py=max(10,h*1.35)
-  x0=max(0,x-px);y0=max(0,y-py);x1=min(a.shape[1],x+w+px);y1=min(a.shape[0],y+h+py)
-  boxes.append([x0,y0,x1-x0,y1-y0])
- return boxes
+  text=t.get('text','').replace(' ','');x,y,w,h=t['box']
+  top_identifier=y<max(55,a.shape[0]*.07) and bool(LONG_TEST_ID.search(text))
+  if top_identifier:
+   strip_height=min(a.shape[0],max(40,y+h+12))
+   boxes.append([0,0,a.shape[1],strip_height]);continue
+  if TEST_OVERLAY.search(text):
+   px=max(22,h*2.4);py=max(14,h*1.6)
+   x0=max(0,x-px);y0=max(0,y-py);x1=min(a.shape[1],x+w+px);y1=min(a.shape[0],y+h+py)
+   boxes.append([x0,y0,x1-x0,y1-y0])
+ merged=[]
+ for box in boxes:
+  x,y,w,h=box
+  for i,other in enumerate(merged):
+   xx,yy,ww,hh=other
+   if min(x+w,xx+ww)>max(x,xx) and min(y+h,yy+hh)>max(y,yy):
+    x0=min(x,xx);y0=min(y,yy);x1=max(x+w,xx+ww);y1=max(y+h,yy+hh)
+    merged[i]=[x0,y0,x1-x0,y1-y0];break
+  else:merged.append(box)
+ return merged
 
 def adaptive_geometry(box,design_width,implementation_width):
  x,_,w,_=box;left=x;right=design_width-x-w;center=x+w/2-design_width/2
@@ -249,7 +281,7 @@ def analyze(design,implementation,config,out,progress,check):
    for x,y,bw,bh in boxes:cv2.rectangle(masks[index],(round(x),round(y)),(round(x+bw),round(y+bh)),0,-1)
    texts[index]=[item for item in t if not any(coverage(item['box'],box)>.15 for box in boxes)]
   count=sum(map(len,ignored))
-  if count:warnings.append(f'已自动忽略 {count} 处 CBase / LEGO 测试浮层。')
+  if count:warnings.append(f'已自动忽略 {count} 处测试浮层或顶部测试标识。')
   valid=(masks[0][:h,:w]&masks[1][:h,:w]).astype(bool)
   heat[:h,:w,3]=np.where(valid & (delta>18),np.clip(delta*1.5,25,210),0).astype(np.uint8)
   Image.fromarray(heat).save(out/'heatmap.png')
@@ -262,7 +294,7 @@ def analyze(design,implementation,config,out,progress,check):
   warnings.append('对应区域过少，图片可能不是同一页面或状态；未匹配项仅供人工复核。')
  stage(3)
  tolerance={'strict':.65,'standard':1,'loose':1.8}[config.get('tolerance','standard')]
- pos=config.get('positionThreshold',2)*tolerance; size=config.get('sizeThreshold',3)/100*tolerance; color=config.get('colorThreshold',3)*tolerance
+ pos=config.get('positionThreshold',2)*tolerance; size=config.get('sizeThreshold',3)/100*tolerance; color=max(10,max(12,config.get('colorThreshold',12))*tolerance)
  unit='逻辑单位' if known else '设计图基准 px'
  issues=[]
  def original_box(b,index):
@@ -323,10 +355,11 @@ def analyze(design,implementation,config,out,progress,check):
    add('text_size','疑似字号'+('偏大' if sh>rh else '偏小'),r,s,[metric('可见字形高度',rh,sh,estimate=True)],'OCR 字形边界','核对原生字号、字体和系统字体缩放；字形高度不是实际字号。','medium')
   ca=sampled_color(aa,r['box'],kind=='text');cb=sampled_color(bb,s['box'],kind=='text')
   if ca is not None and cb is not None:
-   de=float(deltaE_ciede2000(rgb2lab(ca[None,None,:]/255),rgb2lab(cb[None,None,:]/255))[0,0])
-   if de>color:
+   changed,color_data=significant_color_change(ca,cb,color)
+   if changed:
     ha='#'+''.join(f'{int(v):02X}' for v in ca); hb='#'+''.join(f'{int(v):02X}' for v in cb)
-    add('color','文字颜色偏差' if kind=='text' else '区域颜色偏差',r,s,[{'metric':'截图采样色','designValue':ha,'implementationValue':hb,'delta':round(de,2),'unit':'ΔE00','source':'interior_pixel_sampling','certainty':'measured'}],'稳定区域采样 · CIEDE2000','核对对应颜色与透明度；截图采样色不等同源码颜色。',conf)
+    measurements=[{'metric':'截图采样色','designValue':ha,'implementationValue':hb,'delta':round(color_data['deltaE'],2),'unit':'ΔE00','source':'interior_pixel_sampling','certainty':'measured'},{'metric':'色相角差','designValue':0,'implementationValue':round(color_data['hueDelta'],1),'delta':round(color_data['hueDelta'],1),'unit':'°','source':'HSV hue distance','certainty':'estimated'}]
+    add('color','文字颜色明显不同' if kind=='text' else '区域颜色明显不同',r,s,measurements,'稳定区域采样 · sRGB 归一化 · CIEDE2000 与色相角','核对对应色值与透明度；已忽略常见设备色域、亮度和饱和度的小幅漂移。',conf)
   if kind=='text' and abs(sh/rh-1)<.35 and abs(sw/rw-1)<.25 and ca is not None and cb is not None and np.linalg.norm(ca-cb)<45:
    wa=weight_features(aa,r['box']);wb=weight_features(bb,s['box'])
    if wa and wb:
@@ -357,4 +390,4 @@ def analyze(design,implementation,config,out,progress,check):
     remove.add(q['id']);break
  issues=[q for q in issues if q['id'] not in remove]
  stage(4)
- return {'status':'partial' if any(cov[c]['status']!='checked' for c in selected) else 'completed','issues':issues,'coverage':cov,'warnings':warnings,'transforms':maps,'metadata':metadata,'ignoredOverlays':ignored,'mode':'cross_width_reference' if cross else 'same_width','normalizedSizes':[[a.shape[1],a.shape[0]] for a in imgs],'duration':round(time.monotonic()-start,1),'candidateCounts':[len(r) for r in rs],'matchedCandidates':len(pairs),'unit':unit,'analyzerVersion':'1.1.0'}
+ return {'status':'partial' if any(cov[c]['status']!='checked' for c in selected) else 'completed','issues':issues,'coverage':cov,'warnings':warnings,'transforms':maps,'metadata':metadata,'ignoredOverlays':ignored,'mode':'cross_width_reference' if cross else 'same_width','normalizedSizes':[[a.shape[1],a.shape[0]] for a in imgs],'duration':round(time.monotonic()-start,1),'candidateCounts':[len(r) for r in rs],'matchedCandidates':len(pairs),'unit':unit,'analyzerVersion':'1.2.0'}

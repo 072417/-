@@ -2,7 +2,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 from PIL import Image, ImageDraw, ImageFont
-from server.engine import analyze,CATEGORIES
+from server.engine import analyze,CATEGORIES,overlay_boxes,significant_color_change
 
 FONT='/System/Library/Fonts/STHeiti Light.ttc'
 MEDIUM_FONT='/System/Library/Fonts/STHeiti Medium.ttc'
@@ -65,14 +65,41 @@ def test_real_font_weight_change(tmp_path):
  r=run(tmp_path,a,b)
  assert any(q['category']=='font_weight' for q in r['issues'])
 
-@pytest.mark.parametrize('label', ['CBase', 'LEGO'])
+@pytest.mark.parametrize('label', ['CBase', 'LEGO', '容器'])
 def test_common_test_overlay_is_automatically_ignored(tmp_path, label):
  a=fixture();b=fixture();d=ImageDraw.Draw(b)
  d.rounded_rectangle((275,20,375,58),8,fill='#20242A')
  d.text((292,29),label,font=ImageFont.truetype(FONT,16),fill='white')
  r=run(tmp_path,a,b)
- assert any('CBase / LEGO' in warning for warning in r['warnings'])
+ assert any('测试浮层' in warning for warning in r['warnings'])
  assert not any(q['implementationBBox'] and q['implementationBBox']['x']>260 and q['implementationBBox']['y']<70 for q in r['issues'])
+
+@pytest.mark.parametrize('text', ['PIN14:26UO', '1653900554043/分', 'ABC123456789'])
+def test_top_test_identifier_ignores_status_strip(text):
+ boxes=overlay_boxes(np.zeros((800,390,3),dtype=np.uint8),[{'text':text,'box':[120,9,170,20]}])
+ assert boxes==[[0,0,390,41]]
+
+def test_overlapping_top_identifiers_share_one_ignored_strip():
+ boxes=overlay_boxes(np.zeros((800,390,3),dtype=np.uint8),[{'text':'PIN14:26UO','box':[20,9,90,20]},{'text':'1653900554043/分','box':[190,8,180,22]}])
+ assert boxes==[[0,0,390,42]]
+
+@pytest.mark.parametrize('text', ['14:26', '52', '积分 1234'])
+def test_normal_short_numbers_are_not_automatically_ignored(text):
+ assert overlay_boxes(np.zeros((800,390,3),dtype=np.uint8),[{'text':text,'box':[120,9,80,20]}])==[]
+
+def test_small_device_gamut_shift_is_ignored():
+ changed,evidence=significant_color_change(np.array([40,86,63]),np.array([44,91,68]),12)
+ assert not changed
+ assert evidence['deltaE']<12
+
+@pytest.mark.parametrize(('design','implementation'),[
+ ([220,35,30],[240,120,20]),
+ ([240,215,20],[240,125,20]),
+])
+def test_obvious_hue_changes_are_reported(design,implementation):
+ changed,evidence=significant_color_change(np.array(design),np.array(implementation),12)
+ assert changed
+ assert evidence['hueDelta']>=12
 
 def test_unknown_density_requests_alignment(tmp_path):
  r=run(tmp_path,fixture(400),fixture(400,scale=2),{'design':{},'implementation':{}})
