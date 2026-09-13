@@ -94,11 +94,13 @@ def regions(a,texts):
   if any(r['kind']=='image' and coverage([x,y,w,h],r['box'])>.82 for r in rs):continue
   if any(iou([x,y,w,h],r['box'])>.8 or (w<85 and h<85 and r['kind']=='icon' and abs(x+w/2-r['box'][0]-r['box'][2]/2)<3 and abs(y+h/2-r['box'][1]-r['box'][3]/2)<3) for r in rs): continue
   if any(coverage([x,y,w,h],t['box'])>.6 for t in texts): continue
-  contains_text=any(coverage(t['box'],[x,y,w,h])>.6 for t in texts)
+  contained_text=[t for t in texts if coverage(t['box'],[x,y,w,h])>.6]
+  contains_text=bool(contained_text)
   if photo_like(a,[x,y,w,h]):kind='image'
   elif 10<=w<=85 and 10<=h<=85 and not contains_text and max(w,h)/max(1,min(w,h))<=1.8:kind='icon'
   else:kind='component'
   label={'icon':'图标区域','image':'图片区域','component':'组件区域'}[kind]
+  if kind=='component' and contained_text:label+='：'+' / '.join(t['text'] for t in contained_text[:2])
   rs.append({'box':[x,y,w,h],'kind':kind,'text':label,'confidence':.7})
   if len(rs)>=180: break
  return rs
@@ -120,15 +122,41 @@ def match(a,b,aa,bb,cross=False):
    dist=math.hypot((x-xx)/max(aa.shape[1],bb.shape[1]),(y-yy)/max(600,aa.shape[0],bb.shape[0]))
    size=abs(math.log(max(1,w)/max(1,ww)))+abs(math.log(max(1,h)/max(1,hh)))
    if r['kind']=='text':
-    similarity=SequenceMatcher(None,r['text'].replace(' ',''),s['text'].replace(' ','')).ratio()
-    if similarity<.65: continue
+    first_text=normalized_text(r['text']);second_text=normalized_text(s['text'])
+    similarity=SequenceMatcher(None,first_text,second_text).ratio();length_ratio=min(len(first_text),len(second_text))/max(1,len(first_text),len(second_text))
+    # Do not pair a complete line with one OCR fragment: that produces cropped
+    # evidence boxes and measurements for different visual targets.
+    if similarity<.65 or length_ratio<.82: continue
     costs[i,j]=(1-similarity)*2+dist*.8+min(size,2)*.08
    else:
-    costs[i,j]=dist*1.4+min(size,3)*.2+np.mean(np.abs(fa[i]-fb[j]))*.4
+    shape_delta=float(np.mean(np.abs(fa[i]-fb[j])))
+    shape_cosine=float(np.sum(fa[i]*fb[j])/(np.linalg.norm(fa[i])*np.linalg.norm(fb[j])+1e-6))
+    aspect_delta=abs(math.log(max(.01,w/max(1,h))/max(.01,ww/max(1,hh))))
+    if r['kind']=='icon' and (shape_cosine<.58 or shape_delta>.32 or aspect_delta>.38):continue
+    has_label='：' in r['text'];other_has_label='：' in s['text']
+    if r['kind']=='component' and (aspect_delta>.5 or has_label!=other_has_label or (not has_label and shape_cosine<.52)):continue
+    if r['kind']=='component' and '：' in r['text'] and '：' in s['text']:
+     label_similarity=SequenceMatcher(None,normalized_text(r['text'].split('：',1)[1]),normalized_text(s['text'].split('：',1)[1])).ratio()
+     if label_similarity<.72:continue
+    costs[i,j]=dist*1.4+min(size,3)*.2+shape_delta*.4
  pairs=[]
  for i,j in zip(*linear_sum_assignment(costs)):
   if costs[i,j]<(.52 if a[i]['kind']=='text' else .52): pairs.append((int(i),int(j),float(costs[i,j])))
  return pairs,[i for i in range(len(a)) if i not in {x[0] for x in pairs}],[j for j in range(len(b)) if j not in {x[1] for x in pairs}]
+
+def fragmented_text_counterpart(r,others):
+ """Treat same-row substring OCR boxes as one visual text target."""
+ target=normalized_text(r.get('text',''))
+ if len(target)<2:return False
+ x,y,w,h=r['box'];center=y+h/2
+ for other in others:
+  if other.get('kind')!='text':continue
+  xx,yy,ww,hh=other['box'];other_text=normalized_text(other.get('text',''))
+  if len(other_text)<2 or abs(center-(yy+hh/2))>max(10,max(h,hh)*1.5):continue
+  horizontal_gap=max(0,max(x,xx)-min(x+w,xx+ww))
+  if horizontal_gap>max(12,max(h,hh)*6):continue
+  if target in other_text or other_text in target:return True
+ return False
 
 def background_color(a,b):
  x,y,w,h=[int(round(v)) for v in b];pad=4
@@ -178,10 +206,38 @@ def refine_text_box(a,b):
  box=[max(0,int(x)-pad),max(0,int(y)-pad),int(w)+pad*2+1,int(h)+pad*2+1]
  p,mask=glyph_mask(a,box)
  if not p.size:return b
+ # Keep one visual text line. OCR observations can accidentally include a nearby
+ # status icon or the next line even when their recognized string belongs to only
+ # one line.
+ row_counts=mask.sum(axis=1);active=np.flatnonzero(row_counts>=max(2,round(mask.shape[1]*.03)))
+ if len(active):
+  bands=[];start=previous=int(active[0])
+  for row in active[1:]:
+   row=int(row)
+   if row>previous+1:bands.append((start,previous));start=row
+   previous=row
+  bands.append((start,previous))
+  top,bottom=max(bands,key=lambda band:int(mask[band[0]:band[1]+1].sum()))
+  line=np.zeros_like(mask);line[top:bottom+1]=mask[top:bottom+1];mask=line
+ col_counts=mask.sum(axis=0);active=np.flatnonzero(col_counts>0)
+ if len(active):
+  groups=[];start=previous=int(active[0]);join_gap=max(3,round(mask.shape[0]*.22))
+  for column in active[1:]:
+   column=int(column)
+   if column>previous+join_gap+1:groups.append((start,previous));start=column
+   previous=column
+  groups.append((start,previous))
+  anchor=max(range(len(groups)),key=lambda index:int(mask[:,groups[index][0]:groups[index][1]+1].sum()))
+  anchor_ink=int(mask[:,groups[anchor][0]:groups[anchor][1]+1].sum())
+  first=last=anchor;neighbor_gap=max(10,round((bottom-top+1)*1.25)) if len(active) else 10
+  while first>0 and groups[first][0]-groups[first-1][1]-1<=neighbor_gap and int(mask[:,groups[first-1][0]:groups[first-1][1]+1].sum())>=anchor_ink*.2:first-=1
+  while last+1<len(groups) and groups[last+1][0]-groups[last][1]-1<=neighbor_gap and int(mask[:,groups[last+1][0]:groups[last+1][1]+1].sum())>=anchor_ink*.2:last+=1
+  left,right=groups[first][0],groups[last][1]
+  line=np.zeros_like(mask);line[:,left:right+1]=mask[:,left:right+1];mask=line
  yy,xx=np.nonzero(mask)
  if len(xx)<8:return b
  refined=[box[0]+int(xx.min()),box[1]+int(yy.min()),int(xx.max()-xx.min()+1),int(yy.max()-yy.min()+1)]
- if refined[2]<w*.45 or refined[3]<h*.35:return b
+ if refined[2]<w*.22 or refined[3]<h*.18:return b
  return refined
 
 def sampled_color(a,b,text=False):
@@ -198,6 +254,23 @@ def sampled_color(a,b,text=False):
  values,counts=np.unique(quant,axis=0,return_counts=True)
  top=values[np.argmax(counts)];pixels=pixels[np.all(quant==top,axis=1)]
  return np.median(pixels,axis=0)
+
+def uniform_text_color(a,b):
+ p=crop(a,b)
+ if not p.size:return False
+ pixels=p.reshape(-1,3);bg=background_color(a,b);distance=np.linalg.norm(pixels.astype(float)-bg,axis=1)
+ pixels=pixels[distance>=max(24,float(np.percentile(distance,85)))]
+ if len(pixels)<8:return False
+ hsv=cv2.cvtColor(pixels.reshape(-1,1,3).astype(np.uint8),cv2.COLOR_RGB2HSV).reshape(-1,3)
+ colored=hsv[:,1]>=48;colored_share=float(colored.mean())
+ # A line containing both colored and neutral words is not one color target.
+ if .18<colored_share<.82:return False
+ if colored_share>=.82:
+  hues=hsv[colored,0].astype(float)*2
+  center=float(np.angle(np.mean(np.exp(1j*np.deg2rad(hues))),deg=True)%360)
+  spread=np.minimum(abs(hues-center),360-abs(hues-center))
+  if float(np.percentile(spread,80))>18:return False
+ return True
 
 def color_evidence(a,b):
  lab=rgb2lab(np.array([a,b],dtype=float).reshape(1,2,3)/255)[0]
@@ -233,9 +306,12 @@ def weight(a,b):
 def significant_weight_change(a,b,tolerance=1):
  stroke=math.log(max(.01,b['strokeWidth'])/max(.01,a['strokeWidth']))
  density=math.log(max(.01,b['inkDensity'])/max(.01,a['inkDensity']))
+ area=math.log(max(1,b.get('inkArea',1))/max(1,a.get('inkArea',1))) if 'inkArea' in a and 'inkArea' in b else 0
  # Stroke width alone is unstable under scaling and antialiasing. A clear fill-density
  # change is required so small screenshot rendering differences are not called weight changes.
- changed=abs(density)>.20*tolerance and (stroke*density>=0 or abs(stroke)<.05)
+ # Ink area supplies a fallback when antialiasing leaves the distance-transform
+ # stroke estimate unchanged, as can happen between Regular and Medium CJK fonts.
+ changed=(abs(density)>.20*tolerance and (stroke*density>=0 or abs(stroke)<.05)) or (abs(area)>.30*tolerance and area*density>0)
  return changed,stroke,density
 
 def overlay_boxes(a,texts):
@@ -250,6 +326,17 @@ def overlay_boxes(a,texts):
    px=max(22,h*2.4);py=max(14,h*1.6)
    x0=max(0,x-px);y0=max(0,y-py);x1=min(a.shape[1],x+w+px);y1=min(a.shape[0],y+h+py)
    boxes.append([x0,y0,x1-x0,y1-y0])
+ # CBase/LEGO inspection builds can also show an unlabeled floating gear control.
+ # Detect only dark, compact controls near the right edge to avoid masking App UI.
+ gray=cv2.cvtColor(a,cv2.COLOR_RGB2GRAY);dark=(gray<185).astype(np.uint8)*255
+ dark=cv2.morphologyEx(dark,cv2.MORPH_CLOSE,np.ones((5,5),np.uint8))
+ contours,_=cv2.findContours(dark,cv2.RETR_EXTERNAL,cv2.CHAIN_APPROX_SIMPLE)
+ for contour in contours:
+  x,y,w,h=cv2.boundingRect(contour)
+  if x<a.shape[1]*.76 or not (22<=w<=68 and 22<=h<=68) or max(w,h)/max(1,min(w,h))>1.45:continue
+  patch=crop(gray,[x,y,w,h]);dark_share=float((patch<185).mean()) if patch.size else 0
+  if dark_share<.28:continue
+  pad=6;boxes.append([max(0,x-pad),max(0,y-pad),min(a.shape[1],x+w+pad)-max(0,x-pad),min(a.shape[0],y+h+pad)-max(0,y-pad)])
  merged=[]
  for box in boxes:
   x,y,w,h=box
@@ -513,17 +600,20 @@ def analyze(design,implementation,config,out,progress,check):
    width_supports_size=height_scale*width_scale>0 and abs(width_scale)>=.05
    if box_ink_consistent and same_text and width_supports_size and abs(height_scale)>max(text_size_threshold,.12) and abs(implementation_glyph_height-design_glyph_height)>=3:
     add('text_size','疑似字号'+('偏大' if implementation_glyph_height>design_glyph_height else '偏小'),r,s,[metric('字符主体墨迹高度',design_glyph_height,implementation_glyph_height,estimate=True)],'OCR 定位 · 去除按钮边框与长线 · 字符连通域主体高度','核对原生字号和系统字体缩放；测量只使用字符墨迹，不包含行距、上下留白或按钮边框。','medium')
-  # Photo colors depend on source content, compression, and color profile; they
-  # are not UI color tokens and should not create local color issues.
-  ca=sampled_color(aa,r['box'],kind=='text') if kind!='image' else None;cb=sampled_color(bb,s['box'],kind=='text') if kind!='image' else None
+  # Color is only meaningful for the same single-color text or the same icon.
+  # Components, photos, and mixed-color OCR lines are not one color target.
+  same_color_text=kind=='text' and SequenceMatcher(None,normalized_text(r['text']),normalized_text(s['text'])).ratio()>=.95 and uniform_text_color(aa,r['box']) and uniform_text_color(bb,s['box'])
+  color_eligible=kind=='icon' or same_color_text
+  ca=sampled_color(aa,r['box'],kind=='text') if color_eligible else None;cb=sampled_color(bb,s['box'],kind=='text') if color_eligible else None
   if ca is not None and cb is not None:
    changed,color_data=significant_color_change(ca,cb,color)
    if changed:
     ha='#'+''.join(f'{int(v):02X}' for v in ca); hb='#'+''.join(f'{int(v):02X}' for v in cb)
     measurements=[{'metric':'截图采样色','designValue':ha,'implementationValue':hb,'delta':round(color_data['deltaE'],2),'unit':'ΔE00','source':'interior_pixel_sampling','certainty':'measured'},{'metric':'色相角差','designValue':0,'implementationValue':round(color_data['hueDelta'],1),'delta':round(color_data['hueDelta'],1),'unit':'°','source':'HSV hue distance','certainty':'estimated'}]
-    add('color','文字颜色明显不同' if kind=='text' else '区域颜色明显不同',r,s,measurements,'稳定区域采样 · sRGB 归一化 · CIEDE2000 与色相角','核对对应色值与透明度；已忽略常见设备色域、亮度和饱和度的小幅漂移。',conf)
+    add('color','文字颜色明显不同' if kind=='text' else '图标颜色明显不同',r,s,measurements,'相同单色文字或形状匹配图标 · 稳定前景采样 · sRGB 归一化 · CIEDE2000 与色相角','核对对应文字或图标色值与透明度；已忽略混合色文字区域及常见设备色域、亮度和饱和度的小幅漂移。',conf)
   weight_text_consistent=kind=='text' and SequenceMatcher(None,normalized_text(r['text']),normalized_text(s['text'])).ratio()>=.9 and box_ink_consistent
-  if weight_text_consistent and abs(sh/rh-1)<.35 and abs(sw/rw-1)<.25 and ca is not None and cb is not None and np.linalg.norm(ca-cb)<45:
+  weight_ca=sampled_color(aa,r['box'],True) if weight_text_consistent else None;weight_cb=sampled_color(bb,s['box'],True) if weight_text_consistent else None
+  if weight_text_consistent and abs(sh/rh-1)<.35 and abs(sw/rw-1)<.25 and weight_ca is not None and weight_cb is not None and np.linalg.norm(weight_ca-weight_cb)<45:
    wa=weight_features(aa,r['box']);wb=weight_features(bb,s['box'])
    if wa and wb:
     changed_weight,stroke,density=significant_weight_change(wa,wb,tolerance)
@@ -545,6 +635,11 @@ def analyze(design,implementation,config,out,progress,check):
    for k in unmatched:
     r=rs[index][k];x,y,ww,hh=r['box']
     if r['kind']!='text' or r['confidence']<.6 or y+hh>h-2:continue
+    # A QA overlay can obscure otherwise identical App content on one side.
+    # Suppress the unmatched text when its corresponding location is covered by
+    # an automatically ignored overlay in the opposite screenshot.
+    if any(coverage(r['box'],box)>.15 for box in ignored[1-index]):continue
+    if fragmented_text_counterpart(r,rs[1-index]):continue
     add('missing' if index==0 else 'extra','未匹配的文字，需复核',r if index==0 else None,r if index==1 else None,[],'OCR 未匹配候选','检查是否为内容变化、遮挡或识别失败；不能仅据此确认元素缺失。','low','low')
  # Collapse nested movement duplicates with equal movement, retaining independent style issues.
  movement=[q for q in issues if q['category']=='component_position']
@@ -559,4 +654,4 @@ def analyze(design,implementation,config,out,progress,check):
     remove.add(q['id']);break
  issues=[q for q in issues if q['id'] not in remove]
  stage(4)
- return {'status':'partial' if any(cov[c]['status']!='checked' for c in selected) else 'completed','issues':issues,'coverage':cov,'warnings':warnings,'transforms':maps,'metadata':metadata,'ignoredOverlays':ignored,'mode':'cross_width_reference' if cross else 'same_width','normalizedSizes':[[a.shape[1],a.shape[0]] for a in imgs],'duration':round(time.monotonic()-start,1),'candidateCounts':[len(r) for r in rs],'matchedCandidates':len(pairs),'unit':unit,'analyzerVersion':'1.4.1'}
+ return {'status':'partial' if any(cov[c]['status']!='checked' for c in selected) else 'completed','issues':issues,'coverage':cov,'warnings':warnings,'transforms':maps,'metadata':metadata,'ignoredOverlays':ignored,'mode':'cross_width_reference' if cross else 'same_width','normalizedSizes':[[a.shape[1],a.shape[0]] for a in imgs],'duration':round(time.monotonic()-start,1),'candidateCounts':[len(r) for r in rs],'matchedCandidates':len(pairs),'unit':unit,'analyzerVersion':'1.5.0'}
