@@ -3,7 +3,7 @@ import numpy as np
 import cv2
 import pytest
 from PIL import Image, ImageDraw, ImageFont
-from server.engine import analyze,CATEGORIES,overlay_boxes,significant_color_change,significant_weight_change,regions,glyph_height,photo_like,uniform_text_color,refine_text_box,match,fragmented_text_counterpart
+from server.engine import analyze,CATEGORIES,overlay_boxes,significant_color_change,significant_weight_change,regions,glyph_height,photo_like,uniform_text_color,refine_text_box,match,fragmented_text_counterpart,component_order_differences
 
 FONT='/System/Library/Fonts/STHeiti Light.ttc'
 MEDIUM_FONT='/System/Library/Fonts/STHeiti Medium.ttc'
@@ -50,6 +50,15 @@ def test_vertical_text_move_is_component_arrangement_not_alignment(tmp_path):
  moved=[q for q in r['issues'] if 'Aligned' in q['regionLabel']]
  assert any(q['category']=='component_position' for q in moved)
  assert not any(q['category']=='alignment' for q in moved)
+
+def test_component_row_order_reversal_is_detected_as_one_relationship():
+ def text(label,x,y,w=60):return {'box':[x,y,w,16],'kind':'text','text':label,'confidence':1}
+ design=[text('当前订单店铺直播中',20,20,150),text('购后小助手',20,70,90),text('查看使用说明书',210,70,120),text('分享商品',40,110),text('联系商家',130,110),text('申请退款',220,110)]
+ implementation=[text('当前订单店铺直播中',20,20,150),text('购后小助手',20,115,90),text('查看使用说明书',210,115,120),text('分享商品',40,70),text('联系商家',130,70),text('申请退款',220,70)]
+ changes=component_order_differences([design,implementation],[(i,i,0) for i in range(len(design))],2)
+ assert len(changes)==1
+ assert changes[0]['designRelative']*changes[0]['implementationRelative']<0
+ assert changes[0]['r']['text']=='购后小助手组件 ↔ 订单按钮组'
 
 def test_spacing_is_reported_as_its_own_category(tmp_path):
  r=run(tmp_path,fixture(),fixture(kind='spacing'))

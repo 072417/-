@@ -359,6 +359,67 @@ def union_box(a,b):
  x=min(a[0],b[0]);y=min(a[1],b[1]);right=max(a[0]+a[2],b[0]+b[2]);bottom=max(a[1]+a[3],b[1]+b[3])
  return [x,y,right-x,bottom-y]
 
+def boxes_union(items):
+ box=items[0]['box'][:]
+ for item in items[1:]:box=union_box(box,item['box'])
+ return box
+
+def component_group_label(items):
+ labels=[]
+ for item in sorted(items,key=lambda value:value['box'][0]):
+  text=re.sub(r'^[•·\s]+','',item.get('text','')).strip()
+  if text and text not in labels:labels.append(text)
+ joined=' / '.join(labels)
+ if '购后小助手' in joined:return '购后小助手组件'
+ if sum(any(word in label for label in labels) for word in ('分享商品','联系商家','申请退款'))>=2:return '订单按钮组'
+ return ' / '.join(labels[:3]) or '组件组'
+
+def component_order_differences(regions,pairs,threshold):
+ """Find nearby row groups whose vertical order reverses between screenshots."""
+ entries=[{'i':i,'j':j,'r':regions[0][i],'s':regions[1][j]} for i,j,_ in pairs if regions[0][i]['kind']=='text']
+ if len(entries)<2:return []
+ parent=list(range(len(entries)))
+ def root(index):
+  while parent[index]!=index:
+   parent[index]=parent[parent[index]];index=parent[index]
+  return index
+ def join(first,second):
+  a=root(first);b=root(second)
+  if a!=b:parent[b]=a
+ def same_row(a,b):
+  x,y,w,h=a['box'];xx,yy,ww,hh=b['box']
+  return abs((y+h/2)-(yy+hh/2))<=max(7,min(h,hh)*.7)
+ for first in range(len(entries)):
+  for second in range(first+1,len(entries)):
+   if same_row(entries[first]['r'],entries[second]['r']) and same_row(entries[first]['s'],entries[second]['s']):join(first,second)
+ grouped={}
+ for index,entry in enumerate(entries):grouped.setdefault(root(index),[]).append(entry)
+ groups=[]
+ for values in grouped.values():
+  design_items=[entry['r'] for entry in values];implementation_items=[entry['s'] for entry in values]
+  groups.append({'entries':values,'r':{'box':boxes_union(design_items),'kind':'component','text':component_group_label(design_items)},'s':{'box':boxes_union(implementation_items),'kind':'component','text':component_group_label(implementation_items)}})
+ candidates=[]
+ for first in range(len(groups)):
+  for second in range(first+1,len(groups)):
+   a=groups[first];b=groups[second]
+   if max(len(a['entries']),len(b['entries']))<2:continue
+   ax,ay,aw,ah=a['r']['box'];bx,by,bw,bh=b['r']['box'];qax,qay,qaw,qah=a['s']['box'];qbx,qby,qbw,qbh=b['s']['box']
+   design_relative=(ay+ah/2)-(by+bh/2);implementation_relative=(qay+qah/2)-(qby+qbh/2)
+   if design_relative*implementation_relative>=0 or min(abs(design_relative),abs(implementation_relative))<max(8,threshold*2):continue
+   if max(abs(design_relative),abs(implementation_relative))>180:continue
+   design_overlap=max(0,min(ax+aw,bx+bw)-max(ax,bx));implementation_overlap=max(0,min(qax+qaw,qbx+qbw)-max(qax,qbx))
+   if design_overlap<min(aw,bw)*.12 or implementation_overlap<min(qaw,qbw)*.12:continue
+   r={'box':union_box(a['r']['box'],b['r']['box']),'kind':'component','text':f'{a["r"]["text"]} ↔ {b["r"]["text"]}'}
+   s={'box':union_box(a['s']['box'],b['s']['box']),'kind':'component','text':r['text']}
+   candidates.append({'r':r,'s':s,'designRelative':design_relative,'implementationRelative':implementation_relative,'indices':{entry['i'] for entry in a['entries']+b['entries']},'span':r['box'][3]})
+ candidates.sort(key=lambda item:item['span'])
+ selected=[]
+ for candidate in candidates:
+  if any(candidate['indices']<=kept['indices'] or kept['indices']<=candidate['indices'] for kept in selected):continue
+  selected.append(candidate)
+  if len(selected)>=8:break
+ return selected
+
 def immediate_component_parents(items):
  parents={}
  for index,item in enumerate(items):
@@ -552,9 +613,17 @@ def analyze(design,implementation,config,out,progress,check):
  sameheight=abs(aa.shape[0]-bb.shape[0])<2
  if not sameheight:
   warnings.append('两侧内容高度不同：底部锚定区域可在设置中指定；未知锚定的纵向偏移仅作为候选。')
+ order_changes=component_order_differences(rs,pairs,pos)
+ order_members={index for item in order_changes for index in item['indices']}
  spacing_changes=spacing_differences(rs,pairs,aa.shape[1],bb.shape[1],cross,spacing_threshold)
  spacing_members={index for item in spacing_changes for index in item['indices']}
  alignment_changes=alignment_differences(rs,pairs,aa.shape[1],bb.shape[1],cross,pos)
+ for item in order_changes:
+  first,second=item['r']['text'].split(' ↔ ',1)
+  design_order=f'{first}在{second}{"下方" if item["designRelative"]>0 else "上方"}'
+  implementation_order=f'{first}在{second}{"下方" if item["implementationRelative"]>0 else "上方"}'
+  measurements=[{'metric':'上下排列顺序','designValue':design_order,'implementationValue':implementation_order,'delta':1,'unit':'顺序变化','source':'matched_neighbor_relationship','certainty':'measured'},metric('两组中心相对 y',item['designRelative'],item['implementationRelative'])]
+  add('component_position','组件排列顺序不同',item['r'],item['s'],measurements,'匹配组件分组 · 同行聚合 · 上下邻接关系比较','检查父容器中的组件声明顺序、flex/grid order 或条件渲染位置。','high')
  for i,j,cost in pairs:
   check(); r=rs[0][i];s=rs[1][j]; x,y,rw,rh=r['box'];xx,yy,sw,sh=s['box'];kind=r['kind']
   if min(y+rh,yy+sh)>h and (y>=h or yy>=h):continue
@@ -572,7 +641,7 @@ def analyze(design,implementation,config,out,progress,check):
   yq=(bb.shape[0]-yy-sh-config.get('implementation',{}).get('safeBottom',0)) if bottom else yy
   dy=yq-yp
   if abs(dx)>pos or abs(dy)>pos or (cross and kind!='text' and abs(sw-expected_w)>max(2,expected_w*size)):
-   dedicated_relation=i in spacing_members
+   dedicated_relation=i in spacing_members or i in order_members
    if not dedicated_relation:
     cat='component_position'
     title='跨宽组件排布不符合预期' if cross else '文字或按钮组件排布位置变化' if kind=='text' else '组件位置偏移'
@@ -653,5 +722,10 @@ def analyze(design,implementation,config,out,progress,check):
    if coverage([qb[k] for k in ('x','y','width','height')],[pb[k] for k in ('x','y','width','height')])>.9 and all(abs(a['delta']-b['delta'])<1.2 for a,b in zip(q['measurements'],parent['measurements'])):
     remove.add(q['id']);break
  issues=[q for q in issues if q['id'] not in remove]
+ # A row-order reversal explains child position offsets inside the two swapped
+ # groups. Keep independent size findings, but remove duplicate movement cards.
+ order_issues=[q for q in issues if q['category']=='component_position' and q['title']=='组件排列顺序不同']
+ duplicate_titles={'文字或按钮组件排布位置变化','组件位置偏移','跨宽组件排布不符合预期'}
+ issues=[q for q in issues if q in order_issues or q['title'] not in duplicate_titles or not any(q['designBBox'] and order['designBBox'] and coverage([q['designBBox'][key] for key in ('x','y','width','height')],[order['designBBox'][key] for key in ('x','y','width','height')])>.55 for order in order_issues)]
  stage(4)
- return {'status':'partial' if any(cov[c]['status']!='checked' for c in selected) else 'completed','issues':issues,'coverage':cov,'warnings':warnings,'transforms':maps,'metadata':metadata,'ignoredOverlays':ignored,'mode':'cross_width_reference' if cross else 'same_width','normalizedSizes':[[a.shape[1],a.shape[0]] for a in imgs],'duration':round(time.monotonic()-start,1),'candidateCounts':[len(r) for r in rs],'matchedCandidates':len(pairs),'unit':unit,'analyzerVersion':'1.5.0'}
+ return {'status':'partial' if any(cov[c]['status']!='checked' for c in selected) else 'completed','issues':issues,'coverage':cov,'warnings':warnings,'transforms':maps,'metadata':metadata,'ignoredOverlays':ignored,'mode':'cross_width_reference' if cross else 'same_width','normalizedSizes':[[a.shape[1],a.shape[0]] for a in imgs],'duration':round(time.monotonic()-start,1),'candidateCounts':[len(r) for r in rs],'matchedCandidates':len(pairs),'unit':unit,'analyzerVersion':'1.6.0'}
